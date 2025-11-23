@@ -32,6 +32,27 @@ ElasticRelay 是一个无缝的异构数据同步器，旨在提供从主要 OLT
 - **编排器 (Orchestrator)**：管理同步任务的生命周期。
 - **控制平面 (Control Plane)**：UI 和配置管理后端。
 
+## 快速运行
+
+要快速启动并运行 ElasticRelay，请按照以下三个简单步骤：
+
+### 第一步：构建
+```sh
+./scripts/build.sh
+```
+
+### 第二步：配置
+编辑配置文件 `./config/parallel_config.json`，确保数据库和 Elasticsearch 连接信息正确。
+
+### 第三步：执行
+```sh
+./start.sh
+```
+
+完成这些步骤后，ElasticRelay 将开始监控数据库变更并同步到 Elasticsearch。
+
+---
+
 ## 如何运行
 
 ### 先决条件

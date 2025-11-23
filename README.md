@@ -32,6 +32,27 @@ The system is composed of several key components:
 - **Orchestrator**: Manages the lifecycle of synchronization tasks.
 - **Control Plane**: The UI and configuration management backend.
 
+## Quick Start
+
+To quickly get ElasticRelay up and running, follow these three simple steps:
+
+### Step 1: Build
+```sh
+./scripts/build.sh
+```
+
+### Step 2: Configure
+Edit the configuration file `./config/parallel_config.json` and ensure the database and Elasticsearch connection information is correct.
+
+### Step 3: Execute
+```sh
+./start.sh
+```
+
+After completing these steps, ElasticRelay will start monitoring database changes and synchronizing them to Elasticsearch.
+
+---
+
 ## How to Run
 
 ### Prerequisites
