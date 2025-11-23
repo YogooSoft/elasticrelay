@@ -298,4 +298,4 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 - 📧 Email: support@yogoo.net
 - 💬 Community: [GitHub Discussions](https://github.com/yogoosoft/ElasticRelay/discussions)
 - 🐛 Bug Reports: [GitHub Issues](https://github.com/yogoosoft/ElasticRelay/issues)
-- 📖 Documentation: [docs.elasticrelay.io](https://docs.elasticrelay.io)
+- 📖 Documentation: [docs.elasticrelay.com](https://docs.elasticrelay.com)

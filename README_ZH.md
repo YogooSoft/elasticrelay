@@ -313,4 +313,4 @@ limitations under the License.
 - 📧 邮箱: support@yogoo.net
 - 💬 社区: [GitHub Discussions](https://github.com/yogoosoft/ElasticRelay/discussions)
 - 🐛 问题报告: [GitHub Issues](https://github.com/yogoosoft/ElasticRelay/issues)
-- 📖 文档: [docs.elasticrelay.io](https://docs.elasticrelay.io)
+- 📖 文档: [docs.elasticrelay.com](https://docs.elasticrelay.com)
