@@ -16,7 +16,7 @@ Thank you for your interest in contributing to ElasticRelay! We welcome contribu
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/elasticrelay.git
+   git clone https://github.com/yogoosoft/elasticrelay.git
    cd elasticrelay
    ```
 3. **Set up development environment**:
