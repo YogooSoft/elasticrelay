@@ -183,7 +183,7 @@ Contributors are recognized in multiple ways:
 
 - 💬 **GitHub Discussions**: Best for questions and ideas
 - 🐛 **GitHub Issues**: For bug reports and feature requests
-- 📧 **Email**: dev@elasticrelay.io for sensitive matters
+- 📧 **Email**: support@yogoo.net for sensitive matters
 - 💻 **Discord**: [Join our developer community](https://discord.gg/elasticrelay)
 
 ## 📋 Code of Conduct
