@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package gateway.v1;
+
+option go_package = "github.com/yogoosoft/elasticrelay/api/gateway/v1;gatewayv1";
+
+// ChangeEvent represents a single data change event from the source.
+message ChangeEvent {
+  // Type of the change (CREATE, UPDATE, DELETE).
+  string op = 1;
+  // The transaction/commit information from the source.
+  Checkpoint checkpoint = 2;
+  // The primary key of the record.
+  string primary_key = 3;
+  // The data record after the change, in a standardized format (e.g., JSON string).
+  string data = 4;
+}
+
+// Checkpoint holds the information about the source's position.
+message Checkpoint {
+  // For MySQL: binlog file name.
+  string mysql_binlog_file = 1;
+  // For MySQL: binlog position.
+  uint32 mysql_binlog_pos = 2;
+  // For PostgreSQL: Log Sequence Number (LSN).
+  string postgres_lsn = 3;
+  // For MongoDB: resume token.
+  string mongo_resume_token = 4;
+}
+
+// SnapshotChunk represents a chunk of data from an initial snapshot.
+message SnapshotChunk {
+  // The records in this chunk.
+  repeated string records = 1;
+  // A cursor indicating the position in the snapshot.
+  string cursor = 2;
+  // A hash for data validation (optional).
+  string validation_hash = 3;
+  // For MySQL: binlog file name at the time of snapshot start.
+  string snapshot_binlog_file = 4;
+  // For MySQL: binlog position at the time of snapshot start.
+  uint32 snapshot_binlog_pos = 5;
+}

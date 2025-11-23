@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: elasticrelay-mysql
+    restart: unless-stopped
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-elasticrelay}
+      MYSQL_USER: ${MYSQL_USER:-elasticrelay_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-elasticrelay_pass}
+      # 设置时区
+      TZ: Asia/Shanghai
+    volumes:
+      # 数据持久化到本地 data 目录
+      - ./data:/var/lib/mysql
+      # 初始化脚本（可选）
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # MySQL 配置文件（可选）
+      - ./mysql.conf:/etc/mysql/conf.d/mysql.conf:ro
+    command: 
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --innodb-flush-log-at-trx-commit=1
+      - --sync-binlog=1
+      - --binlog-row-metadata=FULL
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+      interval: 30s
+    networks:
+      - elasticrelay-network
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: elasticrelay-elasticsearch
+    restart: unless-stopped
+    ports:
+      - "${ES_PORT:-9200}:9200"
+      - "${ES_TRANSPORT_PORT:-9300}:9300"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - TZ=Asia/Shanghai
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - elasticrelay-network
+
+networks:
+  elasticrelay-network:
+    driver: bridge
+    name: elasticrelay-network
+
+volumes:
+  mysql-data:
+    driver: local
+  elasticsearch-data:
+    driver: local

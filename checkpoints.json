@@ -1,0 +1,10 @@
+{
+  "mysql-to-es": {
+    "mysql_binlog_file": "binlog.000007",
+    "mysql_binlog_pos": 16905
+  },
+  "mysql-to-es-parallel": {
+    "mysql_binlog_file": "binlog.000008",
+    "mysql_binlog_pos": 23580
+  }
+}

@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package gateway.v1;
+
+import "api/gateway/v1/common.proto";
+
+option go_package = "github.com/yogoosoft/elasticrelay/api/gateway/v1;gatewayv1";
+
+// ConnectorService is responsible for capturing data from source databases.
+service ConnectorService {
+  // Begins an initial consistent snapshot of a table.
+  rpc BeginSnapshot(BeginSnapshotRequest) returns (stream SnapshotChunk);
+  // Starts capturing Change Data Capture (CDC) events.
+  rpc StartCdc(StartCdcRequest) returns (stream ChangeEvent);
+  // Commits a checkpoint, acknowledging that data up to this point has been processed.
+  rpc CommitCheckpoint(CommitCheckpointRequest) returns (CommitCheckpointResponse);
+  // Loads an existing checkpoint for a job.
+  rpc LoadCheckpoint(LoadCheckpointRequest) returns (LoadCheckpointResponse);
+}
+
+message BeginSnapshotRequest {
+  string job_id = 1;
+  string table_name = 2;
+}
+
+message StartCdcRequest {
+  string job_id = 1;
+  // The checkpoint from which to start. If empty, starts from the latest position.
+  Checkpoint start_checkpoint = 2;
+}
+
+message CommitCheckpointRequest {
+  string job_id = 1;
+  Checkpoint checkpoint = 2;
+}
+
+message CommitCheckpointResponse {
+  bool success = 1;
+}
+
+message LoadCheckpointRequest {
+  string job_id = 1;
+}
+
+message LoadCheckpointResponse {
+  bool success = 1;
+  string error = 2;
+  Checkpoint checkpoint = 3;
+}

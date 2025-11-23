@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package gateway.v1;
+
+option go_package = "github.com/yogoosoft/elasticrelay/api/gateway/v1;gatewayv1";
+
+// ConfigService manages the application configuration.
+service ConfigService {
+  // Gets the current configuration
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+  // Updates the configuration
+  rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
+  // Reloads the configuration from file
+  rpc ReloadConfig(ReloadConfigRequest) returns (ReloadConfigResponse);
+}
+
+message GetConfigRequest {}
+
+message GetConfigResponse {
+  Configuration config = 1;
+}
+
+message UpdateConfigRequest {
+  Configuration config = 1;
+}
+
+message UpdateConfigResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ReloadConfigRequest {}
+
+message ReloadConfigResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message Configuration {
+  string db_host = 1;
+  int32 db_port = 2;
+  string db_user = 3;
+  string db_password = 4;
+  string db_name = 5;
+  uint32 server_id = 6;
+  repeated string table_filters = 7;
+  repeated string es_addresses = 8;
+  string es_user = 9;
+  string es_password = 10;
+}

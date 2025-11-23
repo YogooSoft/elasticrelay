@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package gateway.v1;
+
+import "api/gateway/v1/common.proto";
+
+option go_package = "github.com/yogoosoft/elasticrelay/api/gateway/v1;gatewayv1";
+
+// TransformService applies data governance and transformation rules.
+service TransformService {
+  // Validates a set of transformation rules.
+  rpc ValidateRules(ValidateRulesRequest) returns (ValidateRulesResponse);
+  // Applies transformation rules to a stream of change events.
+  rpc ApplyRules(stream ChangeEvent) returns (stream ChangeEvent);
+}
+
+message TransformRule {
+  string id = 1;
+  string name = 2;
+  string definition = 3; // e.g., JSON or a custom DSL
+}
+
+message ValidateRulesRequest {
+  repeated TransformRule rules = 1;
+}
+
+message ValidateRulesResponse {
+  bool valid = 1;
+  string error_message = 2;
+}

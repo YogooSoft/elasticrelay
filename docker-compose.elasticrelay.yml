@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  elasticrelay:
+    image: ${ELASTICRELAY_IMAGE:-elasticrelay:v1.2.1}
+    container_name: ${CONTAINER_NAME:-elasticrelay-standalone}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${GRPC_PORT:-50051}:50051"
+      - "${METRICS_PORT:-8080}:8080"
+    environment:
+      # 时区配置
+      - TZ=${TZ:-Asia/Shanghai}
+      # 可选的环境变量配置
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      # 配置文件挂载 (智能挂载：文件挂载到 config.json，目录挂载到 config/)
+      - ${CONFIG_PATH:-./config}:${CONFIG_TARGET:-/app/config}${CONFIG_MOUNT_MODE:-:ro}
+      
+      # 日志目录挂载
+      - ${LOGS_PATH:-./logs}:/app/logs
+      
+      # DLQ (死信队列) 目录挂载
+      - ${DLQ_PATH:-./dlq}:/app/dlq
+      
+      # 可选：checkpoints 文件挂载
+      - ${CHECKPOINTS_PATH:-./checkpoints.json}:/app/checkpoints.json
+      
+    # 启动命令配置
+    command: [
+      "--config", "${CONFIG_FILE:-/app/config/config.json}",
+      "--port", "${GRPC_PORT:-50051}"
+    ]
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ps aux | grep elasticrelay | grep -v grep || exit 1"]
+      interval: ${HEALTH_CHECK_INTERVAL:-30s}
+      timeout: ${HEALTH_CHECK_TIMEOUT:-10s}
+      retries: ${HEALTH_CHECK_RETRIES:-3}
+      start_period: ${HEALTH_CHECK_START_PERIOD:-30s}
+    
+    # 网络配置 (可选)
+    networks:
+      - ${NETWORK_NAME:-elasticrelay-network}
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-100m}"
+        max-file: "${LOG_MAX_FILES:-5}"
+    
+    # 资源限制 (可选)
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT:-512m}
+          cpus: ${CPU_LIMIT:-1.0}
+        reservations:
+          memory: ${MEMORY_RESERVATION:-256m}
+          cpus: ${CPU_RESERVATION:-0.5}
+
+# 网络配置
+networks:
+  elasticrelay-network:
+    driver: bridge
+    name: ${NETWORK_NAME:-elasticrelay-network}
+    external: ${NETWORK_EXTERNAL:-false}

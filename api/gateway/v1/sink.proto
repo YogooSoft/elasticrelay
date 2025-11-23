@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package gateway.v1;
+
+import "api/gateway/v1/common.proto";
+
+option go_package = "github.com/yogoosoft/elasticrelay/api/gateway/v1;gatewayv1";
+
+// SinkService is responsible for writing data to the destination (Elasticsearch).
+service SinkService {
+  // Writes a batch of change events to the sink.
+  rpc BulkWrite(stream ChangeEvent) returns (BulkWriteResponse);
+  // Describes an Elasticsearch index.
+  rpc DescribeIndex(DescribeIndexRequest) returns (DescribeIndexResponse);
+  // Creates or updates an Elasticsearch index template.
+  rpc PutTemplate(PutTemplateRequest) returns (PutTemplateResponse);
+  // Sets up an Index Lifecycle Management (ILM) policy.
+  rpc SetupIlm(SetupIlmRequest) returns (SetupIlmResponse);
+}
+
+message BulkWriteResponse {
+  int32 success_count = 1;
+  int32 failed_count = 2;
+  repeated string failed_ids = 3;
+}
+
+message DescribeIndexRequest {
+  string index_name = 1;
+}
+
+message DescribeIndexResponse {
+  string index_name = 1;
+  bool exists = 2;
+  int64 document_count = 3;
+  string index_definition = 4; // JSON string (optional)
+}
+
+message PutTemplateRequest {
+  string template_name = 1;
+  string template_definition = 2; // JSON string
+}
+
+message PutTemplateResponse {
+  bool acknowledged = 1;
+}
+
+message SetupIlmRequest {
+  string policy_name = 1;
+  string policy_definition = 2; // JSON string
+}
+
+message SetupIlmResponse {
+  bool acknowledged = 1;
+}

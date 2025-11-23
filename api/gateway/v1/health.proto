@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package gateway.v1;
+
+option go_package = "github.com/yogoosoft/elasticrelay/api/gateway/v1;gatewayv1";
+
+// HealthService provides health checks for the services.
+service HealthService {
+  // Checks the health of the service.
+  rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+  // Watches the health of the service.
+  rpc Watch(HealthCheckRequest) returns (stream HealthCheckResponse);
+}
+
+message HealthCheckRequest {
+  string service = 1; // e.g., "connector", "sink"
+}
+
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  ServingStatus status = 1;
+}
