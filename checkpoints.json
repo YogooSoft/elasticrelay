@@ -3,6 +3,10 @@
     "mysql_binlog_file": "binlog.000007",
     "mysql_binlog_pos": 16905
   },
+  "mysql-to-es-cdc": {
+    "mysql_binlog_file": "mysql-binlog.000004",
+    "mysql_binlog_pos": 197
+  },
   "mysql-to-es-parallel": {
     "mysql_binlog_file": "binlog.000008",
     "mysql_binlog_pos": 23580

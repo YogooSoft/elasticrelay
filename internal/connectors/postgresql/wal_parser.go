@@ -127,6 +127,11 @@ func NewWALParser(conn *pgconn.PgConn, slotName, publication, startLSN string, t
 	}
 }
 
+// AddRelation adds a preloaded relation/table schema to the parser
+func (wp *WALParser) AddRelation(relation *RelationInfo) {
+	wp.relations[relation.RelationID] = relation
+}
+
 // StartReplication begins logical replication and parses messages
 func (wp *WALParser) StartReplication(ctx context.Context, handler *EventHandler) error {
 	// Build replication command with correct syntax

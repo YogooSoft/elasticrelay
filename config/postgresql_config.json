@@ -51,7 +51,8 @@
       "enabled": true,
       "description": "PostgreSQL逻辑复制CDC到Elasticsearch的实时同步任务",
       "options": {
-        "initial_sync": false,
+        "initial_sync": true,
+        "force_initial_sync": true,
         "batch_size": 1000,
         "checkpoint_interval": "30s",
         "use_parallel": true,

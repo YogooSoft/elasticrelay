@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -254,6 +255,54 @@ func (c *Connector) createPublication(ctx context.Context) error {
 		log.Printf("Created publication: %s", c.publication)
 	} else {
 		log.Printf("Publication already exists: %s", c.publication)
+		
+		// Publication exists, verify and ensure configured tables are included
+		if len(c.tableFilters) > 0 {
+			// Get current tables in publication
+			currentTables, err := c.getPublicationTables(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to get publication tables: %w", err)
+			}
+			
+			log.Printf("Publication %s currently contains %d tables: %v", c.publication, len(currentTables), currentTables)
+			
+			// Build map of current tables for quick lookup
+			currentTableMap := make(map[string]bool)
+			for _, table := range currentTables {
+				currentTableMap[table] = true
+			}
+			
+			// Find tables that need to be added
+			var tablesToAdd []string
+			for _, table := range c.tableFilters {
+				// Check both with and without schema prefix
+				found := currentTableMap[table] || currentTableMap["public."+table]
+				if !found {
+					tablesToAdd = append(tablesToAdd, table)
+				}
+			}
+			
+			// Add missing tables to publication
+			if len(tablesToAdd) > 0 {
+				log.Printf("Adding missing tables to publication %s: %v", c.publication, tablesToAdd)
+				tableList := ""
+				for i, table := range tablesToAdd {
+					if i > 0 {
+						tableList += ", "
+					}
+					tableList += table
+				}
+				
+				alterSQL := fmt.Sprintf("ALTER PUBLICATION %s ADD TABLE %s", c.publication, tableList)
+				_, err = c.pool.Exec(ctx, alterSQL)
+				if err != nil {
+					return fmt.Errorf("failed to add tables to publication %s: %w", c.publication, err)
+				}
+				log.Printf("Successfully added %d tables to publication %s", len(tablesToAdd), c.publication)
+			} else {
+				log.Printf("All configured tables are already in publication %s", c.publication)
+			}
+		}
 	}
 
 	return nil
@@ -273,6 +322,36 @@ func (c *Connector) buildTableList() string {
 		tableList += table
 	}
 	return tableList
+}
+
+// getPublicationTables returns the list of tables in the publication
+func (c *Connector) getPublicationTables(ctx context.Context) ([]string, error) {
+	query := `
+		SELECT schemaname || '.' || tablename as full_table_name
+		FROM pg_publication_tables 
+		WHERE pubname = $1
+		ORDER BY schemaname, tablename`
+
+	rows, err := c.pool.Query(ctx, query, c.publication)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query publication tables: %w", err)
+	}
+	defer rows.Close()
+
+	var tables []string
+	for rows.Next() {
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			return nil, fmt.Errorf("failed to scan table name: %w", err)
+		}
+		tables = append(tables, tableName)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating publication tables: %w", err)
+	}
+
+	return tables, nil
 }
 
 // startLogicalReplication starts the logical replication process
@@ -306,8 +385,97 @@ func (c *Connector) startLogicalReplication(ctx context.Context, handler *EventH
 	// Create WAL parser
 	walParser := NewWALParser(replConn, c.slotName, c.publication, startLSN, c.tableFilters)
 	
+	// Preload table schema information to avoid "unknown relation ID" errors
+	if err := c.preloadTableSchemas(ctx, walParser); err != nil {
+		log.Printf("Warning: failed to preload table schemas: %v", err)
+		// Continue anyway - schemas will be loaded from RELATION messages
+	}
+	
 	// Start replication and parse messages
 	return walParser.StartReplication(ctx, handler)
+}
+
+// preloadTableSchemas queries table schema information and preloads it into the WAL parser
+func (c *Connector) preloadTableSchemas(ctx context.Context, walParser *WALParser) error {
+	// Get tables from publication
+	tables, err := c.getPublicationTables(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get publication tables: %w", err)
+	}
+	
+	log.Printf("Preloading schemas for %d tables from publication %s", len(tables), c.publication)
+	
+	for _, fullTableName := range tables {
+		// Parse schema.table format
+		parts := strings.Split(fullTableName, ".")
+		var schemaName, tableName string
+		if len(parts) == 2 {
+			schemaName = parts[0]
+			tableName = parts[1]
+		} else {
+			schemaName = "public"
+			tableName = fullTableName
+		}
+		
+		// Query table OID and columns
+		var tableOID uint32
+		err := c.pool.QueryRow(ctx,
+			`SELECT c.oid FROM pg_class c
+			 JOIN pg_namespace n ON n.oid = c.relnamespace
+			 WHERE n.nspname = $1 AND c.relname = $2`,
+			schemaName, tableName).Scan(&tableOID)
+		if err != nil {
+			log.Printf("Warning: failed to get OID for table %s.%s: %v", schemaName, tableName, err)
+			continue
+		}
+		
+		// Query columns
+		rows, err := c.pool.Query(ctx,
+			`SELECT a.attname, a.atttypid, a.atttypmod, t.typname
+			 FROM pg_attribute a
+			 JOIN pg_type t ON t.oid = a.atttypid
+			 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
+			 ORDER BY a.attnum`,
+			tableOID)
+		if err != nil {
+			log.Printf("Warning: failed to query columns for table %s.%s: %v", schemaName, tableName, err)
+			continue
+		}
+		
+		var columns []ColumnInfo
+		for rows.Next() {
+			var colName, typeName string
+			var typeID uint32
+			var typeMod int32
+			if err := rows.Scan(&colName, &typeID, &typeMod, &typeName); err != nil {
+				rows.Close()
+				return fmt.Errorf("failed to scan column info: %w", err)
+			}
+			columns = append(columns, ColumnInfo{
+				Flags:    0, // Default flags
+				Name:     colName,
+				TypeID:   typeID,
+				TypeMod:  typeMod,
+				TypeName: typeName,
+			})
+		}
+		rows.Close()
+		
+		// Create RelationInfo and add to parser
+		relation := &RelationInfo{
+			RelationID:      tableOID,
+			Namespace:       schemaName,
+			RelationName:    tableName,
+			ReplicaIdentity: 'f', // FULL
+			Columns:         columns,
+		}
+		walParser.AddRelation(relation)
+		
+		log.Printf("Preloaded schema for %s.%s (OID: %d, columns: %d)", 
+			schemaName, tableName, tableOID, len(columns))
+	}
+	
+	return nil
 }
 
 // verifyReplicationSlotReady ensures the replication slot is ready for use

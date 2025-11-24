@@ -79,6 +79,7 @@ type MultiJob struct {
 
 	// Job configuration access
 	jobOptions map[string]interface{}
+	sinkConfig map[string]interface{} // Sink configuration for index naming, etc.
 
 	// Dead Letter Queue management (shared from orchestrator)
 	dlqManager *dlq.DLQManager
@@ -286,6 +287,17 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 		return nil, fmt.Errorf("sink '%s' not found", jobConfig.SinkID)
 	}
 
+	// Get sink configuration from multiConfig
+	var sinkConfig map[string]interface{}
+	if mo.multiConfig != nil {
+		for _, sink := range mo.multiConfig.Sinks {
+			if sink.ID == jobConfig.SinkID {
+				sinkConfig = sink.Options
+				break
+			}
+		}
+	}
+
 	jobCtx, cancel := context.WithCancel(context.Background())
 
 	// Check if parallel processing is enabled in job options
@@ -308,6 +320,7 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 		transformClient:   mo.transformClient,
 		useParallel:       useParallel,
 		jobOptions:        jobConfig.Options, // Copy job options for configuration access
+		sinkConfig:        sinkConfig,        // Copy sink options for index naming, etc.
 		dlqManager:        mo.dlqManager,     // Share DLQ manager from orchestrator
 	}
 
@@ -837,12 +850,15 @@ func (j *MultiJob) targetSystemHasData() bool {
 
 // generateIndexName creates an index name based on the table name (matches ES sink logic)
 func (j *MultiJob) generateIndexName(tableName string) string {
-	// Default prefix - this should ideally come from sink configuration
+	// Default prefix
 	indexPrefix := "elasticrelay"
 
-	// Try to extract prefix from sink configuration if available
-	// This would require access to the sink config, which is not directly available here
-	// For now, use the default prefix used by the ES sink
+	// Extract prefix from sink configuration if available
+	if j.sinkConfig != nil {
+		if prefix, ok := j.sinkConfig["index_prefix"].(string); ok && prefix != "" {
+			indexPrefix = prefix
+		}
+	}
 
 	if tableName == "" {
 		return indexPrefix + "-default"

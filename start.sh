@@ -4,8 +4,8 @@ cd "$(dirname "$0")"
 
 # Configuration
 BINARY="./bin/elasticrelay"
-CONFIG="./config/postgresql_config.json"
-#CONFIG="./config/parallel_config.json"
+#CONFIG="./config/postgresql_config.json"
+CONFIG="./config/mysql_config.json"
 PORT="50051"
 LOG_DIR="./logs"
 PID_FILE="./logs/elasticrelay.pid"
