@@ -8,17 +8,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yogoosoft/elasticrelay/internal/config"
-	pb "github.com/yogoosoft/elasticrelay/api/gateway/v1"
 	_ "github.com/lib/pq"
+	pb "github.com/yogoosoft/elasticrelay/api/gateway/v1"
+	"github.com/yogoosoft/elasticrelay/internal/config"
+	"google.golang.org/grpc/metadata"
 )
 
 // IntegrationTestSuite provides comprehensive integration tests for PostgreSQL connector
 type IntegrationTestSuite struct {
-	db       *sql.DB
-	config   *config.Config
-	server   *Server
-	ctx      context.Context
+	db     *sql.DB
+	config *config.Config
+	server *Server
+	ctx    context.Context
 }
 
 // TestPostgreSQLIntegration runs comprehensive integration tests
@@ -56,8 +57,9 @@ func TestPostgreSQLIntegration(t *testing.T) {
 
 func (suite *IntegrationTestSuite) setup(t *testing.T) error {
 	// Connect to PostgreSQL
+	t.Logf("Connecting to PostgreSQL at %s:%d", suite.config.DBHost, suite.config.DBPort)
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		suite.config.DBHost, suite.config.DBPort, suite.config.DBUser, 
+		suite.config.DBHost, suite.config.DBPort, suite.config.DBUser,
 		suite.config.DBPassword, suite.config.DBName)
 
 	db, err := sql.Open("postgres", dsn)
@@ -71,6 +73,7 @@ func (suite *IntegrationTestSuite) setup(t *testing.T) error {
 	}
 
 	suite.db = db
+	t.Log("Database connection established")
 
 	// Create test server
 	server, err := NewServer(suite.config)
@@ -78,15 +81,19 @@ func (suite *IntegrationTestSuite) setup(t *testing.T) error {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
 	suite.server = server
+	t.Log("Test server created")
 
 	// Setup test schema
+	t.Log("Setting up test schema")
 	return suite.setupTestSchema()
 }
 
 func (suite *IntegrationTestSuite) teardown(t *testing.T) {
 	if suite.db != nil {
 		// Cleanup test schema
+		t.Log("Cleaning up test schema")
 		suite.cleanupTestSchema()
+		t.Log("Closing database connection")
 		suite.db.Close()
 	}
 }
@@ -154,7 +161,7 @@ func (suite *IntegrationTestSuite) testBasicConnection(t *testing.T) {
 
 	// Test connection configuration
 	if connector.dbName != suite.config.DBName {
-		t.Errorf("Expected database name '%s', got '%s'", 
+		t.Errorf("Expected database name '%s', got '%s'",
 			suite.config.DBName, connector.dbName)
 	}
 
@@ -209,7 +216,7 @@ func (suite *IntegrationTestSuite) testTypeMapping(t *testing.T) {
 
 	// Test advanced type mapper
 	advancedMapper := NewAdvancedTypeMapper(nil)
-	
+
 	// Test array parsing
 	arrayResult, err := advancedMapper.parsePostgreSQLArray("{1,2,3}", advancedMapper.handleInteger)
 	if err != nil {
@@ -252,7 +259,7 @@ func (suite *IntegrationTestSuite) testReplicationSlotManagement(t *testing.T) {
 	}
 
 	if retrievedSlot.SlotName != slotName {
-		t.Errorf("Retrieved slot name mismatch: expected '%s', got '%s'", 
+		t.Errorf("Retrieved slot name mismatch: expected '%s', got '%s'",
 			slotName, retrievedSlot.SlotName)
 	}
 
@@ -263,7 +270,7 @@ func (suite *IntegrationTestSuite) testReplicationSlotManagement(t *testing.T) {
 	}
 
 	if stats.SlotName != slotName {
-		t.Errorf("Stats slot name mismatch: expected '%s', got '%s'", 
+		t.Errorf("Stats slot name mismatch: expected '%s', got '%s'",
 			slotName, stats.SlotName)
 	}
 
@@ -297,7 +304,7 @@ func (suite *IntegrationTestSuite) testLSNManagement(t *testing.T) {
 		}
 
 		if result != tt.expected {
-			t.Errorf("LSN comparison %s vs %s: expected %d, got %d", 
+			t.Errorf("LSN comparison %s vs %s: expected %d, got %d",
 				tt.lsn1, tt.lsn2, tt.expected, result)
 		}
 	}
@@ -333,7 +340,7 @@ func (suite *IntegrationTestSuite) testLSNManagement(t *testing.T) {
 	}
 
 	if loadedCheckpoint.JobID != checkpoint.JobID {
-		t.Errorf("Checkpoint JobID mismatch: expected '%s', got '%s'", 
+		t.Errorf("Checkpoint JobID mismatch: expected '%s', got '%s'",
 			checkpoint.JobID, loadedCheckpoint.JobID)
 	}
 
@@ -457,10 +464,10 @@ func (suite *IntegrationTestSuite) testPerformance(t *testing.T) {
 	// Test memory optimizer
 	memOptimizer := NewMemoryOptimizer(1, 100*time.Millisecond) // 1MB threshold
 	memOptimizer.Start()
-	
+
 	// Let it run briefly
 	time.Sleep(200 * time.Millisecond)
-	
+
 	memOptimizer.Stop()
 
 	// If we reach here without panics, the memory optimizer is working
@@ -496,15 +503,15 @@ func (m *MockSnapshotStream) RecvMsg(msg interface{}) error {
 	return nil
 }
 
-func (m *MockSnapshotStream) SetHeader(metadata interface{}) error {
+func (m *MockSnapshotStream) SetHeader(md metadata.MD) error {
 	return nil
 }
 
-func (m *MockSnapshotStream) SendHeader(metadata interface{}) error {
+func (m *MockSnapshotStream) SendHeader(md metadata.MD) error {
 	return nil
 }
 
-func (m *MockSnapshotStream) SetTrailer(metadata interface{}) {
+func (m *MockSnapshotStream) SetTrailer(md metadata.MD) {
 }
 
 // getTestConfig returns test configuration or nil if not available
@@ -512,23 +519,23 @@ func getTestConfig() *config.Config {
 	// This would typically read from environment variables or test config
 	// For now, return nil to skip tests unless explicitly configured
 	return nil
-	
+
 	// Example configuration (uncomment and modify for actual testing):
 	/*
-	return &config.Config{
-		DBHost:     "localhost",
-		DBPort:     5432,
-		DBUser:     "postgres",
-		DBPassword: "postgres",
-		DBName:     "test_db",
-	}
+		return &config.Config{
+			DBHost:     "localhost",
+			DBPort:     5432,
+			DBUser:     "postgres",
+			DBPassword: "postgres",
+			DBName:     "test_db",
+		}
 	*/
 }
 
 // BenchmarkTypeMapping benchmarks type conversion performance
 func BenchmarkTypeMapping(b *testing.B) {
 	tm := NewTypeMapper()
-	
+
 	b.Run("TextConversion", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			_, err := tm.ConvertValue("test string", 25) // text type
@@ -537,7 +544,7 @@ func BenchmarkTypeMapping(b *testing.B) {
 			}
 		}
 	})
-	
+
 	b.Run("IntegerConversion", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			_, err := tm.ConvertValue(int32(42), 23) // integer type
@@ -546,7 +553,7 @@ func BenchmarkTypeMapping(b *testing.B) {
 			}
 		}
 	})
-	
+
 	b.Run("JSONConversion", func(b *testing.B) {
 		jsonStr := `{"key": "value", "number": 42, "array": [1,2,3]}`
 		for i := 0; i < b.N; i++ {
@@ -561,7 +568,7 @@ func BenchmarkTypeMapping(b *testing.B) {
 // BenchmarkLSNComparison benchmarks LSN comparison performance
 func BenchmarkLSNComparison(b *testing.B) {
 	lsnMgr := NewLSNManager(nil, "")
-	
+
 	for i := 0; i < b.N; i++ {
 		_, err := lsnMgr.CompareLSN("0/1000000", "0/2000000")
 		if err != nil {

@@ -1,9 +1,7 @@
 package postgresql
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	"github.com/yogoosoft/elasticrelay/internal/config"
 )

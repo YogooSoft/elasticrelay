@@ -800,7 +800,7 @@ func (wp *WALParser) sendStandbyStatusUpdate(ctx context.Context, received, flus
 
 	// Set timestamp (PostgreSQL epoch: 2000-01-01 00:00:00 UTC)
 	pgEpoch := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
-	now := time.Now().Sub(pgEpoch).Microseconds()
+	now := time.Since(pgEpoch).Microseconds()
 	binary.BigEndian.PutUint64(msg[25:33], uint64(now))
 
 	msg[33] = 0 // Reply not requested
@@ -821,6 +821,11 @@ func (wp *WALParser) sendStandbyStatusUpdate(ctx context.Context, received, flus
 	buf, err = copyData.Encode(buf)
 	if err != nil {
 		return fmt.Errorf("failed to encode standby status update: %w", err)
+	}
+
+	// Check context before writing
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled before sending standby status: %w", err)
 	}
 
 	// Write directly to the connection

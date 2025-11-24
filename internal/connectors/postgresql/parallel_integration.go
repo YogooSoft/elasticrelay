@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yogoosoft/elasticrelay/internal/parallel"
-	pb "github.com/yogoosoft/elasticrelay/api/gateway/v1"
 	_ "github.com/lib/pq"
+	pb "github.com/yogoosoft/elasticrelay/api/gateway/v1"
+	"github.com/yogoosoft/elasticrelay/internal/parallel"
 )
 
 // PostgreSQLSnapshotAdapter adapts PostgreSQL connector to work with parallel snapshot manager
@@ -19,21 +19,19 @@ type PostgreSQLSnapshotAdapter struct {
 	config       *PostgreSQLConfig
 	pool         *ManagedPool
 	typeMapper   *AdvancedTypeMapper
-	lsnManager   *LSNManager
-	slotManager  *ReplicationSlotManager
 	dbConnection *sql.DB
 }
 
 // PostgreSQLConfig contains configuration specific to PostgreSQL snapshots
 type PostgreSQLConfig struct {
-	Host         string
-	Port         int
-	User         string
-	Password     string
-	Database     string
-	SSLMode      string
-	AppName      string
-	Timeout      time.Duration
+	Host     string
+	Port     int
+	User     string
+	Password string
+	Database string
+	SSLMode  string
+	AppName  string
+	Timeout  time.Duration
 }
 
 // NewPostgreSQLSnapshotAdapter creates a new PostgreSQL snapshot adapter
@@ -84,9 +82,9 @@ func (psa *PostgreSQLSnapshotAdapter) Close() error {
 // GetTableInfo retrieves information about a table for parallel processing
 func (psa *PostgreSQLSnapshotAdapter) GetTableInfo(ctx context.Context, tableName string) (*parallel.TableInfo, error) {
 	tableInfo := &parallel.TableInfo{
-		Name:      tableName,
-		Schema:    "public", // Default schema
-		Database:  psa.config.Database,
+		Name:     tableName,
+		Schema:   "public", // Default schema
+		Database: psa.config.Database,
 	}
 
 	// Parse schema.table format
@@ -198,7 +196,7 @@ func (psa *PostgreSQLSnapshotAdapter) CreateTableChunks(ctx context.Context, tab
 	}
 
 	pkColumn := tableInfo.PrimaryKey[0]
-	
+
 	// Get min and max values of primary key
 	minMaxQuery := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s",
 		psa.quoteName(pkColumn), psa.quoteName(pkColumn), psa.quoteName(tableInfo.Name))
@@ -211,7 +209,7 @@ func (psa *PostgreSQLSnapshotAdapter) CreateTableChunks(ctx context.Context, tab
 	// Calculate chunk boundaries
 	var chunks []*parallel.ChunkInfo
 	chunkID := 0
-	
+
 	for startID := minID; startID <= maxID; startID += int64(chunkSize) {
 		endID := startID + int64(chunkSize) - 1
 		if endID > maxID {
@@ -345,9 +343,9 @@ func (psa *PostgreSQLSnapshotAdapter) sendChunk(stream pb.ConnectorService_Begin
 	}
 
 	chunk := &pb.SnapshotChunk{
-		Records:           records,
+		Records:            records,
 		SnapshotBinlogFile: currentLSN, // Use LSN as snapshot marker
-		SnapshotBinlogPos: 0,
+		SnapshotBinlogPos:  0,
 	}
 
 	return stream.Send(chunk)
@@ -385,10 +383,14 @@ func (psa *PostgreSQLSnapshotAdapter) convertColumnValue(value interface{}, colT
 
 // basicTypeConversion provides basic type conversion as fallback
 func (psa *PostgreSQLSnapshotAdapter) basicTypeConversion(value interface{}, colType *sql.ColumnType) (interface{}, error) {
+	typeName := colType.DatabaseTypeName()
+
 	switch v := value.(type) {
 	case []byte:
+		log.Printf("Converting column type '%s' from bytes to string", typeName)
 		return string(v), nil
 	case time.Time:
+		log.Printf("Converting column type '%s' from time.Time to RFC3339", typeName)
 		return v.Format(time.RFC3339Nano), nil
 	default:
 		return v, nil
@@ -427,9 +429,8 @@ func (psa *PostgreSQLSnapshotAdapter) GetSnapshotConsistencyPoint(ctx context.Co
 
 // ParallelSnapshotManager wraps the generic parallel manager for PostgreSQL
 type ParallelSnapshotManager struct {
-	adapter    *PostgreSQLSnapshotAdapter
-	manager    *parallel.ParallelSnapshotManager
-	config     *parallel.SnapshotConfig
+	adapter *PostgreSQLSnapshotAdapter
+	config  *parallel.SnapshotConfig
 }
 
 // NewParallelSnapshotManager creates a new PostgreSQL parallel snapshot manager

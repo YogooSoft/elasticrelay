@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
 	pb "github.com/yogoosoft/elasticrelay/api/gateway/v1"
 	"github.com/yogoosoft/elasticrelay/internal/config"
 	"github.com/yogoosoft/elasticrelay/internal/connectors"
@@ -19,8 +21,6 @@ import (
 	"github.com/yogoosoft/elasticrelay/internal/connectors/postgresql"
 	"github.com/yogoosoft/elasticrelay/internal/dlq"
 	"github.com/yogoosoft/elasticrelay/internal/parallel"
-	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/lib/pq"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -664,11 +664,31 @@ func (j *MultiJob) isInitialSyncEnabledInConfig() bool {
 	return true
 }
 
-// hasValidCheckpoint checks if a valid checkpoint exists for this job
-func (j *MultiJob) hasValidCheckpoint() bool {
-	// Simplified approach: directly check checkpoints.json file
-	// This avoids the need for new gRPC methods during initial implementation
+// getCheckpointManager returns the appropriate checkpoint manager for this job's connector type
+func (j *MultiJob) getCheckpointManager() connectors.CheckpointManager {
+	if j.connectorInstance == nil || j.connectorInstance.Config == nil {
+		log.Printf("MultiJob '%s': No connector configuration available", j.ID)
+		return nil
+	}
 
+	switch j.connectorInstance.Config.Type {
+	case "mysql":
+		return mysql.NewMySQLCheckpointManager()
+	case "postgresql":
+		return postgresql.NewPostgreSQLCheckpointManager()
+	case "mongodb":
+		// TODO: Implement MongoDB checkpoint manager
+		log.Printf("MultiJob '%s': MongoDB checkpoint manager not yet implemented", j.ID)
+		return nil
+	default:
+		log.Printf("MultiJob '%s': Unknown connector type '%s'", j.ID, j.connectorInstance.Config.Type)
+		return nil
+	}
+}
+
+// hasValidCheckpoint checks if a valid checkpoint exists for this job using the new CheckpointManager interface
+func (j *MultiJob) hasValidCheckpoint() bool {
+	// Load checkpoints from file
 	checkpoints, err := j.loadCheckpointsFromFile()
 	if err != nil {
 		log.Printf("MultiJob '%s': Cannot load checkpoints file: %v", j.ID, err)
@@ -681,14 +701,52 @@ func (j *MultiJob) hasValidCheckpoint() bool {
 		return false
 	}
 
-	// Validate checkpoint data
-	if cp.MysqlBinlogFile == "" || cp.MysqlBinlogPos == 0 {
-		log.Printf("MultiJob '%s': Invalid checkpoint data: file='%s', pos=%d", j.ID, cp.MysqlBinlogFile, cp.MysqlBinlogPos)
-		return false
+	// Get the appropriate checkpoint manager
+	checkpointMgr := j.getCheckpointManager()
+	if checkpointMgr == nil {
+		// Fallback to legacy validation if no manager is available
+		log.Printf("MultiJob '%s': No checkpoint manager available, using fallback validation", j.ID)
+		return j.hasValidCheckpointLegacy(cp)
 	}
 
-	log.Printf("MultiJob '%s': Valid checkpoint found: %s:%d", j.ID, cp.MysqlBinlogFile, cp.MysqlBinlogPos)
-	return true
+	// Use the checkpoint manager to validate
+	isValid := checkpointMgr.IsValid(cp)
+	if isValid {
+		log.Printf("MultiJob '%s': Valid %s checkpoint found", j.ID, checkpointMgr.GetSourceType())
+	} else {
+		log.Printf("MultiJob '%s': Invalid %s checkpoint", j.ID, checkpointMgr.GetSourceType())
+	}
+
+	return isValid
+}
+
+// hasValidCheckpointLegacy provides fallback validation for when checkpoint manager is not available
+func (j *MultiJob) hasValidCheckpointLegacy(cp *pb.Checkpoint) bool {
+	log.Printf("MultiJob '%s': Using legacy checkpoint validation", j.ID)
+
+	// Check MySQL checkpoint
+	if cp.MysqlBinlogFile != "" && cp.MysqlBinlogPos > 0 {
+		log.Printf("MultiJob '%s': Valid MySQL checkpoint found (legacy): %s:%d",
+			j.ID, cp.MysqlBinlogFile, cp.MysqlBinlogPos)
+		return true
+	}
+
+	// Check PostgreSQL checkpoint
+	if cp.PostgresLsn != "" && cp.PostgresLsn != "0/0" {
+		log.Printf("MultiJob '%s': Valid PostgreSQL checkpoint found (legacy): LSN=%s",
+			j.ID, cp.PostgresLsn)
+		return true
+	}
+
+	// Check MongoDB checkpoint
+	if cp.MongoResumeToken != "" {
+		log.Printf("MultiJob '%s': Valid MongoDB checkpoint found (legacy): token=%s",
+			j.ID, cp.MongoResumeToken)
+		return true
+	}
+
+	log.Printf("MultiJob '%s': No valid checkpoint data found", j.ID)
+	return false
 }
 
 // loadCheckpointsFromFile loads checkpoints directly from the JSON file
@@ -845,7 +903,7 @@ func (j *MultiJob) initializeParallelManager() error {
 		j.connectorInstance.Config.Host,
 		j.connectorInstance.Config.Port,
 		j.connectorInstance.Config.Database)
-	
+
 	dbPool, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return fmt.Errorf("failed to create database connection: %w", err)
@@ -996,7 +1054,7 @@ func (j *MultiJob) processSnapshotChunk(chunk *pb.SnapshotChunk, tableName strin
 		// Parse the JSON record to extract primary key
 		var recordData map[string]interface{}
 		if err := json.Unmarshal([]byte(record), &recordData); err != nil {
-			log.Printf("MultiJob '%s': Failed to parse record JSON: %v", j.ID, err)
+			log.Printf("MultiJob '%s': Failed to parse record JSON from table '%s': %v", j.ID, tableName, err)
 			continue
 		}
 

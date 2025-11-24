@@ -18,14 +18,32 @@ message ChangeEvent {
 
 // Checkpoint holds the information about the source's position.
 message Checkpoint {
+  // === Universal Fields (New Design) ===
+  // Generic position identifier that can represent any source type.
+  // Format depends on source_type:
+  // - MySQL: JSON {"file":"mysql-bin.000001","pos":12345}
+  // - PostgreSQL: LSN string "0/17B4538"
+  // - MongoDB: Resume token string
+  string position = 10;
+  
+  // Source type: "mysql", "postgresql", "mongodb", "kafka", etc.
+  string source_type = 11;
+  
+  // Additional metadata as key-value pairs (optional).
+  map<string, string> metadata = 12;
+  
+  // Timestamp when this checkpoint was created (Unix timestamp in seconds).
+  int64 timestamp = 13;
+  
+  // === Legacy Fields (Deprecated, for backward compatibility) ===
   // For MySQL: binlog file name.
-  string mysql_binlog_file = 1;
+  string mysql_binlog_file = 1 [deprecated = true];
   // For MySQL: binlog position.
-  uint32 mysql_binlog_pos = 2;
+  uint32 mysql_binlog_pos = 2 [deprecated = true];
   // For PostgreSQL: Log Sequence Number (LSN).
-  string postgres_lsn = 3;
+  string postgres_lsn = 3 [deprecated = true];
   // For MongoDB: resume token.
-  string mongo_resume_token = 4;
+  string mongo_resume_token = 4 [deprecated = true];
 }
 
 // SnapshotChunk represents a chunk of data from an initial snapshot.

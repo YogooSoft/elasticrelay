@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -98,7 +99,11 @@ func main() {
 			log.Fatalf("failed to create jobs from configuration: %v", err)
 		}
 
-		log.Printf("MySQL Connector Server created")
+		// Log connector types that were created
+		for _, ds := range multiCfg.DataSources {
+			log.Printf("%s Connector Server created for data source '%s'", 
+				strings.Title(ds.Type), ds.ID)
+		}
 
 		// Create transform server
 		transServer, err := transform.NewServer()
@@ -125,25 +130,43 @@ func main() {
 			}
 		}
 
-		// Create MySQL connector server for multi-config mode
-		connectorServer, err := mysql_connector.NewServer(&config.Config{
-			DBHost:       multiCfg.DataSources[0].Host,
-			DBPort:       multiCfg.DataSources[0].Port,
-			DBUser:       multiCfg.DataSources[0].User,
-			DBPassword:   multiCfg.DataSources[0].Password,
-			DBName:       multiCfg.DataSources[0].Database,
-			ServerID:     multiCfg.DataSources[0].ServerID,
-			TableFilters: multiCfg.DataSources[0].TableFilters,
-		})
-		if err != nil {
-			log.Fatalf("failed to create mysql connector server for multi-config: %v", err)
+		// Create connector server based on data source type for multi-config mode
+		// Note: For legacy compatibility, we create a connector server from the first data source
+		var connectorServer pb.ConnectorServiceServer
+		if len(multiCfg.DataSources) > 0 {
+			firstDS := multiCfg.DataSources[0]
+			switch firstDS.Type {
+			case "mysql":
+				connectorServer, err = mysql_connector.NewServer(&config.Config{
+					DBHost:       firstDS.Host,
+					DBPort:       firstDS.Port,
+					DBUser:       firstDS.User,
+					DBPassword:   firstDS.Password,
+					DBName:       firstDS.Database,
+					ServerID:     firstDS.ServerID,
+					TableFilters: firstDS.TableFilters,
+				})
+				if err != nil {
+					log.Fatalf("failed to create mysql connector server for multi-config: %v", err)
+				}
+			case "postgresql":
+				// For PostgreSQL in multi-config mode, the connector is managed by the orchestrator
+				// We don't need a separate connector server here
+				log.Printf("PostgreSQL connector is managed by the orchestrator")
+			default:
+				log.Printf("Warning: unsupported data source type '%s', connector server not created", firstDS.Type)
+			}
 		}
 
 		// Create and register services on gRPC server
 		s := grpc.NewServer()
 		pb.RegisterOrchestratorServiceServer(s, orchServer)
 		pb.RegisterTransformServiceServer(s, transServer)
-		pb.RegisterConnectorServiceServer(s, connectorServer) // 🔧 Add missing ConnectorService registration
+		
+		// Register connector server if it was created (only for MySQL in multi-config mode)
+		if connectorServer != nil {
+			pb.RegisterConnectorServiceServer(s, connectorServer)
+		}
 
 		// Register all sink servers
 		if len(sinkServers) > 0 {

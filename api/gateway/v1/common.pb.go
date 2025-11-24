@@ -97,6 +97,16 @@ func (x *ChangeEvent) GetData() string {
 // Checkpoint holds the information about the source's position.
 type Checkpoint struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
+	// === Universal Fields (New Design) ===
+	// Generic position identifier that can represent any source type.
+	Position string `protobuf:"bytes,10,opt,name=position,proto3" json:"position,omitempty"`
+	// Source type: "mysql", "postgresql", "mongodb", "kafka", etc.
+	SourceType string `protobuf:"bytes,11,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	// Additional metadata as key-value pairs (optional).
+	Metadata map[string]string `protobuf:"bytes,12,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	// Timestamp when this checkpoint was created (Unix timestamp in seconds).
+	Timestamp int64 `protobuf:"varint,13,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	// === Legacy Fields (Deprecated, for backward compatibility) ===
 	// For MySQL: binlog file name.
 	MysqlBinlogFile string `protobuf:"bytes,1,opt,name=mysql_binlog_file,json=mysqlBinlogFile,proto3" json:"mysql_binlog_file,omitempty"`
 	// For MySQL: binlog position.
@@ -139,6 +149,36 @@ func (*Checkpoint) Descriptor() ([]byte, []int) {
 	return file_api_gateway_v1_common_proto_rawDescGZIP(), []int{1}
 }
 
+// New universal field getters
+func (x *Checkpoint) GetPosition() string {
+	if x != nil {
+		return x.Position
+	}
+	return ""
+}
+
+func (x *Checkpoint) GetSourceType() string {
+	if x != nil {
+		return x.SourceType
+	}
+	return ""
+}
+
+func (x *Checkpoint) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *Checkpoint) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+// Legacy field getters (deprecated)
 func (x *Checkpoint) GetMysqlBinlogFile() string {
 	if x != nil {
 		return x.MysqlBinlogFile
