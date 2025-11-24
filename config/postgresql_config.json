@@ -1,0 +1,112 @@
+{
+  "version": "3.0",
+  "data_sources": [
+    {
+      "id": "postgresql-main",
+      "name": "主PostgreSQL数据库",
+      "type": "postgresql",
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "postgres",
+      "password": "postgres",
+      "database": "elasticrelay",
+      "table_filters": ["test_table", "users", "orders", "products"],
+      "options": {
+        "ssl_mode": "disable",
+        "slot_name": "elasticrelay_slot",
+        "publication_name": "elasticrelay_publication",
+        "batch_size": 1000,
+        "batch_timeout": "5s",
+        "max_connections": 10,
+        "min_connections": 2,
+        "connection_timeout": "60s",
+        "parallel_snapshots": true,
+        "enable_performance_monitoring": true
+      }
+    }
+  ],
+  "sinks": [
+    {
+      "id": "es-main",
+      "name": "主Elasticsearch集群", 
+      "type": "elasticsearch",
+      "addresses": ["http://172.168.0.100:19200"],
+      "user": "elastic",
+      "password": "zIUPPogxwxCR",
+      "options": {
+        "index_prefix": "elasticrelay_pg",
+        "batch_size": 100,
+        "flush_bytes": 1048576,
+        "flush_interval": "3s",
+        "request_timeout": "10s"
+      }
+    }
+  ],
+  "jobs": [
+    {
+      "id": "postgresql-to-es-cdc",
+      "name": "PostgreSQL CDC同步任务",
+      "source_id": "postgresql-main",
+      "sink_id": "es-main",
+      "enabled": true,
+      "description": "PostgreSQL逻辑复制CDC到Elasticsearch的实时同步任务",
+      "options": {
+        "initial_sync": false,
+        "batch_size": 1000,
+        "checkpoint_interval": "30s",
+        "use_parallel": true,
+        
+        "snapshot_config": {
+          "max_concurrent_tables": 3,
+          "max_concurrent_chunks": 8,
+          "chunk_size": 100000,
+          "worker_pool_size": 12,
+          "adaptive_scheduling": true,
+          "streaming_mode": true,
+          "chunk_strategy": "id_based"
+        },
+        
+        "cdc_config": {
+          "commit_frequency": "30s",
+          "batch_commit_size": 1000,
+          "wal_sender_timeout": "300s",
+          "replication_timeout": "30s"
+        },
+        
+        "performance_config": {
+          "gc_threshold_mb": 100,
+          "gc_interval": "30s",
+          "enable_memory_optimization": true,
+          "enable_batching": true
+        },
+        
+        "retry_config": {
+          "max_retries": 3,
+          "retry_backoff": "exponential",
+          "initial_delay": "5s",
+          "max_delay": "300s"
+        },
+        
+        "monitoring": {
+          "metrics_interval": "60s",
+          "progress_reporting": true,
+          "performance_alerts": true,
+          "replication_lag_alert_threshold": "10s"
+        }
+      }
+    }
+  ],
+  "global": {
+    "log_level": "debug",
+    "metrics_port": 8080,
+    "grpc_port": 50051,
+    "dlq_config": {
+      "enabled": true,
+      "storage_path": "./dlq",
+      "max_retries": 3,
+      "retry_delay": "15s",
+      "batch_size": 10,
+      "retry_timeout": "30s"
+    }
+  }
+}

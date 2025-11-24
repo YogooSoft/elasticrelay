@@ -7,6 +7,7 @@ import (
 
 	"github.com/yogoosoft/elasticrelay/internal/config"
 	"github.com/yogoosoft/elasticrelay/internal/connectors/mysql"
+	"github.com/yogoosoft/elasticrelay/internal/connectors/postgresql"
 )
 
 // ConnectorManager manages multiple connector instances for different data sources
@@ -50,8 +51,7 @@ func (cm *ConnectorManager) RegisterDataSource(dataSource *config.DataSourceConf
 	case "mysql":
 		connector, err = cm.createMySQLConnector(dataSource)
 	case "postgresql":
-		// TODO: Implement PostgreSQL connector
-		return fmt.Errorf("postgresql connector not implemented yet")
+		connector, err = cm.createPostgreSQLConnector(dataSource)
 	case "mongodb":
 		// TODO: Implement MongoDB connector
 		return fmt.Errorf("mongodb connector not implemented yet")
@@ -93,6 +93,21 @@ func (cm *ConnectorManager) createMySQLConnector(dataSource *config.DataSourceCo
 	}
 
 	return mysql.NewConnector(legacyConfig)
+}
+
+// createPostgreSQLConnector creates a PostgreSQL connector instance
+func (cm *ConnectorManager) createPostgreSQLConnector(dataSource *config.DataSourceConfig) (*postgresql.Connector, error) {
+	// Convert multi-config to legacy config for PostgreSQL connector
+	legacyConfig := &config.Config{
+		DBHost:       dataSource.Host,
+		DBPort:       dataSource.Port,
+		DBUser:       dataSource.User,
+		DBPassword:   dataSource.Password,
+		DBName:       dataSource.Database,
+		TableFilters: dataSource.TableFilters,
+	}
+
+	return postgresql.NewConnector(legacyConfig)
 }
 
 // UnregisterDataSource removes a data source connector
@@ -231,6 +246,12 @@ func (cm *ConnectorManager) validateDataSource(instance *ConnectorInstance) erro
 	// MySQL specific validation
 	if config.Type == "mysql" && config.ServerID == 0 {
 		return fmt.Errorf("MySQL ServerID cannot be 0")
+	}
+
+	// PostgreSQL specific validation
+	if config.Type == "postgresql" {
+		// Add any PostgreSQL-specific validation here
+		// For now, basic validation is sufficient
 	}
 
 	return nil

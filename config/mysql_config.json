@@ -1,0 +1,100 @@
+{
+  "version": "3.0",
+  "data_sources": [
+    {
+      "id": "mysql-main",
+      "name": "MySQL主数据库",
+      "type": "mysql",
+      "host": "elasticrelay-mysql",
+      "port": 3306,
+      "user": "elasticrelay_user",
+      "password": "elasticrelay_pass",
+      "database": "elasticrelay",
+      "server_id": 100,
+      "table_filters": ["mysql_users", "mysql_orders", "mysql_products", "test_table"],
+      "options": {
+        "charset": "utf8mb4",
+        "timeout": "30s",
+        "binlog_format": "ROW",
+        "binlog_row_image": "FULL",
+        "enable_gtid": true,
+        "batch_size": 1000,
+        "max_connections": 10,
+        "enable_performance_monitoring": true
+      }
+    }
+  ],
+  "sinks": [
+    {
+      "id": "es-main",
+      "name": "主Elasticsearch集群",
+      "type": "elasticsearch",
+      "addresses": ["http://elasticrelay-elasticsearch:9200"],
+      "options": {
+        "index_prefix": "elasticrelay_mysql",
+        "batch_size": 100,
+        "flush_bytes": 1048576,
+        "flush_interval": "3s",
+        "request_timeout": "10s"
+      }
+    }
+  ],
+  "jobs": [
+    {
+      "id": "mysql-to-es-cdc",
+      "name": "MySQL Binlog CDC同步任务",
+      "source_id": "mysql-main",
+      "sink_id": "es-main",
+      "enabled": true,
+      "description": "MySQL binlog CDC到Elasticsearch的实时同步任务",
+      "options": {
+        "initial_sync": true,
+        "batch_size": 1000,
+        "checkpoint_interval": "10s",
+        "use_parallel": false,
+        
+        "binlog_config": {
+          "start_position": "latest",
+          "binlog_format": "ROW",
+          "binlog_row_image": "FULL",
+          "enable_gtid": true,
+          "server_id": 100
+        },
+        
+        "performance_config": {
+          "connection_pool_size": 10,
+          "batch_timeout": "5s",
+          "enable_compression": false,
+          "enable_batching": true
+        },
+        
+        "retry_config": {
+          "max_retries": 3,
+          "retry_backoff": "exponential",
+          "initial_delay": "5s",
+          "max_delay": "300s"
+        },
+        
+        "monitoring": {
+          "metrics_interval": "30s",
+          "progress_reporting": true,
+          "performance_alerts": true,
+          "binlog_lag_alert_threshold": "10s"
+        }
+      }
+    }
+  ],
+  "global": {
+    "log_level": "info",
+    "metrics_port": 8080,
+    "grpc_port": 50051,
+    "dlq_config": {
+      "enabled": true,
+      "storage_path": "./dlq",
+      "max_retries": 3,
+      "retry_delay": "15s",
+      "batch_size": 10,
+      "retry_timeout": "30s"
+    }
+  }
+}

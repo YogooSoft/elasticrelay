@@ -16,9 +16,11 @@ import (
 	"github.com/yogoosoft/elasticrelay/internal/config"
 	"github.com/yogoosoft/elasticrelay/internal/connectors"
 	"github.com/yogoosoft/elasticrelay/internal/connectors/mysql"
+	"github.com/yogoosoft/elasticrelay/internal/connectors/postgresql"
 	"github.com/yogoosoft/elasticrelay/internal/dlq"
 	"github.com/yogoosoft/elasticrelay/internal/parallel"
 	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -396,22 +398,28 @@ func (j *MultiJob) run() {
 func (j *MultiJob) startCDC() {
 	log.Printf("MultiJob '%s': Starting CDC stream for data source '%s'", j.ID, j.SourceID)
 
-	// Get MySQL connector from instance
-	mysqlConnector, ok := j.connectorInstance.Connector.(*mysql.Connector)
-	if !ok {
-		log.Printf("MultiJob '%s': Unsupported connector type", j.ID)
-		return
-	}
-
 	// Create a custom stream handler for this job
 	stream := &jobCDCStream{
 		job: j,
 	}
 
-	// Start CDC with job-specific checkpoint
-	err := mysqlConnector.Start(stream, nil)
-	if err != nil {
-		log.Printf("MultiJob '%s': CDC error: %v", j.ID, err)
+	// Handle different connector types
+	switch connector := j.connectorInstance.Connector.(type) {
+	case *mysql.Connector:
+		log.Printf("MultiJob '%s': Starting MySQL CDC stream", j.ID)
+		err := connector.Start(stream, nil)
+		if err != nil {
+			log.Printf("MultiJob '%s': MySQL CDC error: %v", j.ID, err)
+		}
+	case *postgresql.Connector:
+		log.Printf("MultiJob '%s': Starting PostgreSQL CDC stream", j.ID)
+		err := connector.Start(stream, nil)
+		if err != nil {
+			log.Printf("MultiJob '%s': PostgreSQL CDC error: %v", j.ID, err)
+		}
+	default:
+		log.Printf("MultiJob '%s': Unsupported connector type: %T", j.ID, connector)
+		return
 	}
 }
 
@@ -816,33 +824,41 @@ func (j *MultiJob) shouldForceInitialSync() bool {
 
 // initializeParallelManager initializes the parallel snapshot manager
 func (j *MultiJob) initializeParallelManager() error {
-	// Get database connection from connector
-	var dbPool *sql.DB
-	var esClient parallel.ESClient
+	// For PostgreSQL, we should use the PostgreSQL-specific parallel manager
+	// For now, disable parallel processing for PostgreSQL to avoid MySQL-specific queries
+	if j.connectorInstance.Config.Type == "postgresql" {
+		log.Printf("MultiJob '%s': PostgreSQL detected, disabling parallel processing to avoid compatibility issues", j.ID)
+		j.useParallel = false
+		j.parallelManager = nil
+		return nil
+	}
 
-	// TODO: Extract database connection from connector
-	// For now, we'll create a simple database connection
+	// Only proceed with generic parallel manager for MySQL
+	if j.connectorInstance.Config.Type != "mysql" {
+		return fmt.Errorf("unsupported database type for parallel manager: %s", j.connectorInstance.Config.Type)
+	}
+
+	// Create MySQL database connection
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&charset=utf8mb4",
 		j.connectorInstance.Config.User,
 		j.connectorInstance.Config.Password,
 		j.connectorInstance.Config.Host,
 		j.connectorInstance.Config.Port,
 		j.connectorInstance.Config.Database)
-
-	var err error
-	dbPool, err = sql.Open("mysql", dsn)
+	
+	dbPool, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return fmt.Errorf("failed to create database connection: %w", err)
 	}
 
 	// Create ES client (simplified)
-	esClient = parallel.NewSimpleESClient(
+	esClient := parallel.NewSimpleESClient(
 		"http://172.168.0.100:19200", // TODO: Get from sink config
 		"elastic",
 		"zIUPPogxwxCR",
 	)
 
-	// Create parallel snapshot manager
+	// Create parallel snapshot manager for MySQL
 	config := parallel.DefaultSnapshotConfig()
 	j.parallelManager = parallel.NewParallelSnapshotManager(j.ID, config, dbPool, esClient)
 

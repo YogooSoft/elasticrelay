@@ -1,0 +1,121 @@
+{
+  "version": "3.0",
+  "data_sources": [
+    {
+      "id": "mysql-main",
+      "name": "MySQL主数据库",
+      "type": "mysql",
+      "host": "elasticrelay-mysql",
+      "port": 3306,
+      "user": "elasticrelay_user",
+      "password": "elasticrelay_pass",
+      "database": "elasticrelay",
+      "server_id": 100,
+      "table_filters": ["mysql_users", "mysql_orders"],
+      "options": {
+        "charset": "utf8mb4",
+        "timeout": "30s"
+      }
+    },
+    {
+      "id": "postgresql-main",
+      "name": "PostgreSQL主数据库",
+      "type": "postgresql",
+      "host": "elasticrelay-postgresql",
+      "port": 5432,
+      "user": "elasticrelay_user",
+      "password": "elasticrelay_pass",
+      "database": "elasticrelay",
+      "table_filters": ["users", "orders", "products", "test_table"],
+      "options": {
+        "ssl_mode": "disable",
+        "slot_name": "elasticrelay_pg_slot",
+        "publication_name": "elasticrelay_pg_publication",
+        "batch_size": 1000,
+        "max_connections": 10,
+        "parallel_snapshots": true,
+        "enable_performance_monitoring": true
+      }
+    }
+  ],
+  "sinks": [
+    {
+      "id": "es-main",
+      "name": "主Elasticsearch集群",
+      "type": "elasticsearch", 
+      "addresses": ["http://elasticrelay-elasticsearch:9200"],
+      "options": {
+        "index_prefix": "elasticrelay",
+        "batch_size": 100,
+        "flush_bytes": 1048576,
+        "flush_interval": "3s",
+        "request_timeout": "10s"
+      }
+    }
+  ],
+  "jobs": [
+    {
+      "id": "mysql-to-es",
+      "name": "MySQL同步任务",
+      "source_id": "mysql-main",
+      "sink_id": "es-main",
+      "enabled": true,
+      "description": "MySQL binlog CDC到Elasticsearch",
+      "options": {
+        "initial_sync": true,
+        "batch_size": 100,
+        "checkpoint_interval": "10s"
+      }
+    },
+    {
+      "id": "postgresql-to-es", 
+      "name": "PostgreSQL同步任务",
+      "source_id": "postgresql-main",
+      "sink_id": "es-main",
+      "enabled": true,
+      "description": "PostgreSQL逻辑复制CDC到Elasticsearch",
+      "options": {
+        "initial_sync": true,
+        "batch_size": 1000,
+        "checkpoint_interval": "30s",
+        "use_parallel": true,
+        
+        "snapshot_config": {
+          "max_concurrent_tables": 2,
+          "max_concurrent_chunks": 6,
+          "chunk_size": 50000,
+          "worker_pool_size": 8,
+          "adaptive_scheduling": true
+        },
+        
+        "cdc_config": {
+          "commit_frequency": "30s",
+          "batch_commit_size": 1000,
+          "replication_timeout": "10s"
+        },
+        
+        "performance_config": {
+          "gc_threshold_mb": 80,
+          "enable_memory_optimization": true,
+          "enable_batching": true
+        },
+        
+        "monitoring": {
+          "metrics_interval": "60s",
+          "replication_lag_alert_threshold": "10s"
+        }
+      }
+    }
+  ],
+  "global": {
+    "log_level": "info",
+    "metrics_port": 8080,
+    "grpc_port": 50051,
+    "dlq_config": {
+      "enabled": true,
+      "storage_path": "./dlq",
+      "max_retries": 3,
+      "retry_delay": "15s"
+    }
+  }
+}

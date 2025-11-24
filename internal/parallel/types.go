@@ -147,6 +147,38 @@ func (dt *DataTransformer) TransformBatch(records []*Record) ([]*ESDocument, err
 	return documents, nil
 }
 
+// TableInfo contains information about a table for parallel processing
+type TableInfo struct {
+	Name          string       `json:"name"`
+	Schema        string       `json:"schema"`
+	Database      string       `json:"database"`
+	TotalRows     int64        `json:"total_rows"`
+	EstimatedRows int64        `json:"estimated_rows"`
+	PrimaryKey    []string     `json:"primary_key"`
+	Columns       []ColumnInfo `json:"columns"`
+	HasTimestamp  bool         `json:"has_timestamp"`
+}
+
+// ColumnInfo contains information about a table column
+type ColumnInfo struct {
+	Name         string      `json:"name"`
+	DataType     string      `json:"data_type"`
+	IsNullable   bool        `json:"is_nullable"`
+	IsPrimaryKey bool        `json:"is_primary_key"`
+	DefaultValue interface{} `json:"default_value,omitempty"`
+}
+
+// ChunkInfo contains information about a data chunk for parallel processing
+type ChunkInfo struct {
+	ID          string `json:"id"`
+	TableName   string `json:"table_name"`
+	WhereClause string `json:"where_clause"`
+	StartID     int64  `json:"start_id"`
+	EndID       int64  `json:"end_id"`
+	RowCount    int64  `json:"row_count"`
+	ChunkSize   int    `json:"chunk_size"`
+}
+
 // Statistics represents parallel snapshot statistics
 type Statistics struct {
 	TablesTotal      int64 `json:"tables_total"`

@@ -8,6 +8,7 @@
 /release/
 /test/
 /examples/
+/docs/
 *.exe
 *.exe~
 *.dll

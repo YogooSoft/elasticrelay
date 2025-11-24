@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   mysql:
     image: mysql:8.0
@@ -14,13 +12,16 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-elasticrelay_pass}
       # 设置时区
       TZ: Asia/Shanghai
+      # MySQL初始化参数
+      MYSQL_INITDB_SKIP_TZINFO: 1
     volumes:
-      # 数据持久化到本地 data 目录
-      - ./data:/var/lib/mysql
-      # 初始化脚本（可选）
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-      # MySQL 配置文件（可选）
-      - ./mysql.conf:/etc/mysql/conf.d/mysql.conf:ro
+      # 数据持久化
+      - ./data/mysql:/var/lib/mysql
+      # 初始化脚本
+      - ./config/mysql/init-mysql.sql:/docker-entrypoint-initdb.d/01-init-mysql.sql:ro
+      - ./config/mysql/init-binlog.sql:/docker-entrypoint-initdb.d/02-init-binlog.sql:ro
+      # MySQL配置文件
+      - ./config/mysql/mysql.conf:/etc/mysql/conf.d/elasticrelay.cnf:ro
     command: 
       - --default-authentication-plugin=mysql_native_password
       - --character-set-server=utf8mb4
@@ -28,36 +29,107 @@ services:
       - --innodb-flush-log-at-trx-commit=1
       - --sync-binlog=1
       - --binlog-row-metadata=FULL
+      - --log-bin=mysql-binlog
+      - --binlog-format=ROW
+      - --binlog-do-db=elasticrelay
+      - --server-id=1
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --log-slave-updates=ON
+      - --binlog-checksum=CRC32
+      - --master-verify-checksum=ON
+      - --slave-sql-verify-checksum=ON
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}"]
       timeout: 20s
       retries: 10
       interval: 30s
     networks:
       - elasticrelay-network
 
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
-    container_name: elasticrelay-elasticsearch
+  postgresql:
+    image: postgres:15
+    container_name: elasticrelay-postgresql
     restart: unless-stopped
     ports:
-      - "${ES_PORT:-9200}:9200"
-      - "${ES_TRANSPORT_PORT:-9300}:9300"
+      - "${POSTGRES_PORT:-5432}:5432"
     environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - xpack.security.enrollment.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      - TZ=Asia/Shanghai
+      POSTGRES_DB: ${POSTGRES_DB:-elasticrelay}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # 设置时区
+      TZ: Asia/Shanghai
+      # PostgreSQL 配置
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
     volumes:
-      - elasticsearch-data:/usr/share/elasticsearch/data
+      # 数据持久化
+      - ./data/postgresql:/var/lib/postgresql/data
+      # 初始化脚本
+      - ./config/postgresql/init-postgresql.sql:/docker-entrypoint-initdb.d/01-init-postgresql.sql:ro
+      # PostgreSQL 配置文件
+      - ./config/postgresql/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command: 
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "wal_sender_timeout=300s"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "wal_buffers=16MB"
+      - "-c"
+      - "max_wal_size=4GB"
+      - "-c"
+      - "tcp_keepalives_idle=7200"
+      - "-c"
+      - "tcp_keepalives_interval=75"
+      - "-c"
+      - "tcp_keepalives_count=9"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "log_statement=all"
+      - "-c"
+      - "log_destination=stderr"
+      - "-c"
+      - "logging_collector=on"
+      - "-c"
+      - "log_filename=postgresql-%Y-%m-%d_%H%M%S.log"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      test: ["CMD-SHELL", "pg_ready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-elasticrelay}"]
+      timeout: 20s
+      retries: 10
       interval: 30s
-      timeout: 10s
-      retries: 5
     networks:
       - elasticrelay-network
+
+  # elasticsearch:
+  #   image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+  #   container_name: elasticrelay-elasticsearch
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${ES_PORT:-9200}:9200"
+  #     - "${ES_TRANSPORT_PORT:-9300}:9300"
+  #   environment:
+  #     - discovery.type=single-node
+  #     - xpack.security.enabled=false
+  #     - xpack.security.enrollment.enabled=false
+  #     - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+  #     - TZ=Asia/Shanghai
+  #   volumes:
+  #     - elasticsearch-data:/usr/share/elasticsearch/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #   networks:
+  #     - elasticrelay-network
 
 networks:
   elasticrelay-network:
@@ -67,5 +139,7 @@ networks:
 volumes:
   mysql-data:
     driver: local
-  elasticsearch-data:
+  postgresql-data:
     driver: local
+  # elasticsearch-data:
+  #   driver: local
