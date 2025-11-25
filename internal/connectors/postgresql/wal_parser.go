@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	pb "github.com/yogoosoft/elasticrelay/api/gateway/v1"
+	"github.com/yogoosoft/elasticrelay/internal/logger"
 )
 
 // WALMessage represents a parsed WAL message from PostgreSQL
@@ -144,7 +145,7 @@ func (wp *WALParser) StartReplication(ctx context.Context, handler *EventHandler
 	log.Printf("Starting logical replication with command: %s", cmd)
 
 	// Send replication command using SimpleQuery protocol
-	log.Printf("[DEBUG] About to send replication command using SimpleQuery")
+	logger.Debug("About to send replication command using SimpleQuery")
 
 	// Create a Query message
 	queryMsg := &pgproto3.Query{String: cmd}
@@ -157,27 +158,27 @@ func (wp *WALParser) StartReplication(ctx context.Context, handler *EventHandler
 	}
 
 	// Write directly to the connection
-	log.Printf("[DEBUG] Writing query message to connection")
+	logger.Debug("Writing query message to connection")
 	_, err = wp.conn.Conn().Write(buf)
 	if err != nil {
 		return fmt.Errorf("failed to send replication command: %w", err)
 	}
 
-	log.Printf("[DEBUG] Command sent, waiting for CopyBothResponse")
+	logger.Debug("Command sent, waiting for CopyBothResponse")
 
 	// Now receive the response - should be CopyBothResponse
 	initialMsg, err := wp.conn.ReceiveMessage(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to receive initial response: %w", err)
 	}
-	log.Printf("[DEBUG] Received initial message type: %T", initialMsg)
+	logger.Debug("Received initial message type: %T", initialMsg)
 
 	// Verify it's a CopyBothResponse
 	if _, ok := initialMsg.(*pgproto3.CopyBothResponse); !ok {
 		return fmt.Errorf("unexpected initial response: %T, expected CopyBothResponse", initialMsg)
 	}
 
-	log.Printf("[DEBUG] Successfully entered replication mode (got CopyBothResponse)")
+	logger.Debug("Successfully entered replication mode (got CopyBothResponse)")
 
 	// Process replication messages
 	return wp.processMessages(ctx, handler)
@@ -185,12 +186,12 @@ func (wp *WALParser) StartReplication(ctx context.Context, handler *EventHandler
 
 // processMessages processes incoming WAL messages
 func (wp *WALParser) processMessages(ctx context.Context, handler *EventHandler) error {
-	log.Printf("[DEBUG] Entering processMessages function")
+	logger.Debug("Entering processMessages function")
 
 	// Create a ticker for periodic keepalive messages (every 10 seconds - more frequent)
 	keepaliveTicker := time.NewTicker(10 * time.Second)
 	defer keepaliveTicker.Stop()
-	log.Printf("[DEBUG] Created keepalive ticker")
+	logger.Debug("Created keepalive ticker")
 
 	// Track the last received LSN for status updates - initialize with starting LSN
 	lastReceivedLSN, err := wp.parseLSNToUint64(wp.startLSN)
@@ -198,7 +199,7 @@ func (wp *WALParser) processMessages(ctx context.Context, handler *EventHandler)
 		log.Printf("Warning: failed to parse starting LSN %s: %v", wp.startLSN, err)
 		lastReceivedLSN = 0
 	}
-	log.Printf("[DEBUG] Parsed starting LSN: %s -> %d", wp.startLSN, lastReceivedLSN)
+	logger.Debug("Parsed starting LSN: %s -> %d", wp.startLSN, lastReceivedLSN)
 
 	// Send initial keepalive to establish the connection properly
 	log.Printf("Sending initial keepalive message")
@@ -206,22 +207,22 @@ func (wp *WALParser) processMessages(ctx context.Context, handler *EventHandler)
 		log.Printf("Failed to send initial keepalive: %v", err)
 		return fmt.Errorf("failed to send initial keepalive: %w", err)
 	}
-	log.Printf("[DEBUG] Initial keepalive sent successfully")
+	logger.Debug("Initial keepalive sent successfully")
 
 	// Create a channel to receive messages asynchronously
 	msgChan := make(chan pgproto3.BackendMessage, 1)
 	errChan := make(chan error, 1)
-	log.Printf("[DEBUG] Created message channels")
+	logger.Debug("Created message channels")
 
 	// Start a goroutine to continuously read messages
 	go func() {
-		log.Printf("[DEBUG] Starting message receiving goroutine")
+		logger.Debug("Starting message receiving goroutine")
 		// Add a small delay before starting to receive messages
 		time.Sleep(200 * time.Millisecond)
-		log.Printf("[DEBUG] Starting to receive messages after delay")
+		logger.Debug("Starting to receive messages after delay")
 
 		for {
-			log.Printf("[DEBUG] Waiting to receive message...")
+			logger.Debug("Waiting to receive message...")
 
 			// Create a context with timeout for each receive operation
 			receiveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -229,10 +230,10 @@ func (wp *WALParser) processMessages(ctx context.Context, handler *EventHandler)
 			cancel()
 
 			if err != nil {
-				log.Printf("[DEBUG] ReceiveMessage error: %v", err)
+				logger.Debug("ReceiveMessage error: %v", err)
 				// If it's a timeout or context error, continue the loop
 				if receiveCtx.Err() != nil {
-					log.Printf("[DEBUG] Receive timeout, continuing...")
+					logger.Debug("Receive timeout, continuing...")
 					continue
 				}
 				select {
@@ -242,7 +243,7 @@ func (wp *WALParser) processMessages(ctx context.Context, handler *EventHandler)
 				}
 				return
 			}
-			log.Printf("[DEBUG] Received message type: %T", msg)
+			logger.Debug("Received message type: %T", msg)
 			select {
 			case msgChan <- msg:
 			case <-ctx.Done():
@@ -251,11 +252,11 @@ func (wp *WALParser) processMessages(ctx context.Context, handler *EventHandler)
 		}
 	}()
 
-	log.Printf("[DEBUG] Starting main message processing loop")
+	logger.Debug("Starting main message processing loop")
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("[DEBUG] Context cancelled, exiting processMessages")
+			logger.Debug("Context cancelled, exiting processMessages")
 			return ctx.Err()
 		case <-keepaliveTicker.C:
 			// Send periodic keepalive to prevent timeout
@@ -264,7 +265,7 @@ func (wp *WALParser) processMessages(ctx context.Context, handler *EventHandler)
 				log.Printf("Failed to send periodic keepalive: %v", err)
 			}
 		case msg := <-msgChan:
-			log.Printf("[DEBUG] Processing message from channel: %T", msg)
+			logger.Debug("Processing message from channel: %T", msg)
 			// Process the message based on its type
 			if err := wp.handleMessage(msg, handler); err != nil {
 				log.Printf("Error handling message: %v", err)
@@ -286,14 +287,14 @@ func (wp *WALParser) processMessages(ctx context.Context, handler *EventHandler)
 						lastReceivedLSN = walEnd
 					}
 
-					log.Printf("[DEBUG] LSN update: walStart=%X/%X, walEnd=%X/%X, using LSN=%X/%X",
+					logger.Debug("LSN update: walStart=%X/%X, walEnd=%X/%X, using LSN=%X/%X",
 						uint32(walStart>>32), uint32(walStart),
 						uint32(walEnd>>32), uint32(walEnd),
 						uint32(lastReceivedLSN>>32), uint32(lastReceivedLSN))
 				}
 			}
 		case err := <-errChan:
-			log.Printf("[DEBUG] Received error from channel: %v", err)
+			logger.Debug("Received error from channel: %v", err)
 			return fmt.Errorf("failed to receive message: %w", err)
 		}
 	}
@@ -301,13 +302,13 @@ func (wp *WALParser) processMessages(ctx context.Context, handler *EventHandler)
 
 // handleMessage processes a single message from PostgreSQL
 func (wp *WALParser) handleMessage(msg pgproto3.BackendMessage, handler *EventHandler) error {
-	log.Printf("[DEBUG] handleMessage called with type: %T", msg)
+	logger.Debug("handleMessage called with type: %T", msg)
 	switch m := msg.(type) {
 	case *pgproto3.CopyData:
-		log.Printf("[DEBUG] Processing CopyData message, length: %d", len(m.Data))
+		logger.Debug("Processing CopyData message, length: %d", len(m.Data))
 		return wp.processCopyData(m.Data, handler)
 	case *pgproto3.ErrorResponse:
-		log.Printf("[DEBUG] Received ErrorResponse: %s", m.Message)
+		logger.Debug("Received ErrorResponse: %s", m.Message)
 		return fmt.Errorf("PostgreSQL error: %s", m.Message)
 	case *pgproto3.NoticeResponse:
 		log.Printf("PostgreSQL notice: %s", m.Message)
@@ -320,19 +321,19 @@ func (wp *WALParser) handleMessage(msg pgproto3.BackendMessage, handler *EventHa
 // processCopyData processes CopyData messages containing WAL data
 func (wp *WALParser) processCopyData(data []byte, handler *EventHandler) error {
 	if len(data) == 0 {
-		log.Printf("[DEBUG] processCopyData: empty data")
+		logger.Debug("processCopyData: empty data")
 		return nil
 	}
 
 	msgType := data[0]
-	log.Printf("[DEBUG] processCopyData: message type '%c' (0x%02x), data length: %d", msgType, msgType, len(data))
+	logger.Debug("processCopyData: message type '%c' (0x%02x), data length: %d", msgType, msgType, len(data))
 
 	switch msgType {
 	case 'w': // XLogData message
-		log.Printf("[DEBUG] Processing XLogData message")
+		logger.Debug("Processing XLogData message")
 		return wp.parseXLogData(data[1:], handler)
 	case 'k': // Primary keepalive message
-		log.Printf("[DEBUG] Processing primary keepalive message")
+		logger.Debug("Processing primary keepalive message")
 		return wp.parsePrimaryKeepalive(data[1:])
 	default:
 		log.Printf("Unknown copy data message type: %c (0x%02x)", msgType, msgType)
@@ -352,7 +353,7 @@ func (wp *WALParser) parseXLogData(data []byte, handler *EventHandler) error {
 	walEnd := binary.BigEndian.Uint64(data[8:16])
 	sendTime := int64(binary.BigEndian.Uint64(data[16:24]))
 
-	log.Printf("[DEBUG] XLogData: walStart=%X/%X, walEnd=%X/%X, sendTime=%d",
+	logger.Debug("XLogData: walStart=%X/%X, walEnd=%X/%X, sendTime=%d",
 		uint32(walStart>>32), uint32(walStart),
 		uint32(walEnd>>32), uint32(walEnd),
 		sendTime)
@@ -368,34 +369,34 @@ func (wp *WALParser) parseXLogData(data []byte, handler *EventHandler) error {
 // parseLogicalMessage parses logical decoding messages
 func (wp *WALParser) parseLogicalMessage(data []byte, handler *EventHandler) error {
 	if len(data) == 0 {
-		log.Printf("[DEBUG] parseLogicalMessage: empty data")
+		logger.Debug("parseLogicalMessage: empty data")
 		return nil
 	}
 
 	msgType := data[0]
-	log.Printf("[DEBUG] parseLogicalMessage: message type '%c' (0x%02x), data length: %d", msgType, msgType, len(data))
+	logger.Debug("parseLogicalMessage: message type '%c' (0x%02x), data length: %d", msgType, msgType, len(data))
 
 	switch msgType {
 	case 'B': // Begin transaction
-		log.Printf("[DEBUG] Parsing BEGIN transaction message")
+		logger.Debug("Parsing BEGIN transaction message")
 		return wp.parseBegin(data[1:])
 	case 'C': // Commit transaction
-		log.Printf("[DEBUG] Parsing COMMIT transaction message")
+		logger.Debug("Parsing COMMIT transaction message")
 		return wp.parseCommit(data[1:])
 	case 'R': // Relation
-		log.Printf("[DEBUG] Parsing RELATION message")
+		logger.Debug("Parsing RELATION message")
 		return wp.parseRelation(data[1:])
 	case 'I': // Insert
-		log.Printf("[DEBUG] Parsing INSERT message")
+		logger.Debug("Parsing INSERT message")
 		return wp.parseInsert(data[1:], handler)
 	case 'U': // Update
-		log.Printf("[DEBUG] Parsing UPDATE message")
+		logger.Debug("Parsing UPDATE message")
 		return wp.parseUpdate(data[1:], handler)
 	case 'D': // Delete
-		log.Printf("[DEBUG] Parsing DELETE message")
+		logger.Debug("Parsing DELETE message")
 		return wp.parseDelete(data[1:], handler)
 	case 'T': // Truncate
-		log.Printf("[DEBUG] Parsing TRUNCATE message")
+		logger.Debug("Parsing TRUNCATE message")
 		return wp.parseTruncate(data[1:], handler)
 	default:
 		log.Printf("Unknown logical message type: '%c' (0x%02x), first 32 bytes: %v", msgType, msgType, data[:min(32, len(data))])
@@ -533,7 +534,7 @@ func (wp *WALParser) parseRelation(data []byte) error {
 		Columns:         columns,
 	}
 
-	log.Printf("[DEBUG] Parsed RELATION: id=%d, schema=%s, table=%s, columns=%d",
+	logger.Debug("Parsed RELATION: id=%d, schema=%s, table=%s, columns=%d",
 		relationID, namespace, relationName, len(columns))
 
 	return nil

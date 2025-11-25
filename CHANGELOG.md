@@ -1,5 +1,173 @@
 # ElasticRelay Changelog
 
+## [v1.2.6] - 2025-11-25
+
+### 🚀 Features & Improvements
+
+#### Implemented Global Log Level Control System
+
+**Issue Description:**
+
+The application had inconsistent log level behavior where setting `log_level: "info"` in configuration still displayed verbose DEBUG logs. This was caused by hardcoded debug messages in PostgreSQL connector and lack of a centralized log level filtering system, making production deployments noisy with unnecessary debug output.
+
+**Root Causes:**
+
+1. **Missing Log Level Infrastructure**: No centralized logging system to enforce log level filtering across all components
+2. **Hardcoded DEBUG Messages**: PostgreSQL WAL parser contained 34+ hardcoded `log.Printf("[DEBUG] ...")` statements that ignored configuration
+3. **Configuration Not Applied**: Global log level from config was loaded but never applied to control actual logging behavior
+
+**Implementation Solutions:**
+
+#### 1. Created Centralized Logging System
+
+**New File:** `internal/logger/logger.go`
+
+**Features:**
+```go
+// Log levels supported
+type LogLevel int
+const (
+    DEBUG LogLevel = iota  // Most verbose
+    INFO                   // Default production level  
+    WARN                   // Warnings only
+    ERROR                  // Errors only
+)
+
+// Usage examples
+logger.Debug("Debug information")    // Only shown when level = DEBUG
+logger.Info("Important information") // Shown when level <= INFO  
+logger.Warn("Warning message")       // Shown when level <= WARN
+logger.Error("Error occurred")       // Always shown
+```
+
+**Thread-Safe Implementation:**
+- Global log level with mutex protection
+- Runtime level changes supported
+- Compatible with existing `log.Printf` calls
+
+#### 2. Integrated Log Level Configuration
+
+**File:** `cmd/elasticrelay/main.go`
+
+**Before Fix:**
+```go
+// Configuration loaded but log level never applied
+multiCfg, err := config.LoadMultiConfig(*configFile)
+// Log level remained at default regardless of config
+```
+
+**After Fix:**
+```go
+// Set global log level from configuration
+if multiCfg.Global.LogLevel != "" {
+    logger.SetLogLevel(multiCfg.Global.LogLevel)
+    log.Printf("Set log level to: %s", multiCfg.Global.LogLevel)
+}
+```
+
+#### 3. Fixed Hardcoded Debug Logs in PostgreSQL Connector
+
+**File:** `internal/connectors/postgresql/wal_parser.go`
+
+**Before Fix:**
+```go
+log.Printf("[DEBUG] About to send replication command using SimpleQuery")
+log.Printf("[DEBUG] Writing query message to connection") 
+log.Printf("[DEBUG] Command sent, waiting for CopyBothResponse")
+// ... 34+ more hardcoded debug messages
+```
+
+**After Fix:**
+```go
+logger.Debug("About to send replication command using SimpleQuery")
+logger.Debug("Writing query message to connection")
+logger.Debug("Command sent, waiting for CopyBothResponse")
+// All debug messages now respect global log level
+```
+
+**Batch Replacement:**
+- Replaced all `log.Printf("[DEBUG] ...)` with `logger.Debug(...)`
+- Added logger import to PostgreSQL connector
+- Maintained same debug information but with proper level control
+
+#### 4. Updated Configuration Files
+
+**File:** `config/postgresql_config.json`
+
+**Before:**
+```json
+{
+  "global": {
+    "log_level": "debug"  // Caused verbose output
+  }
+}
+```
+
+**After:**
+```json
+{
+  "global": {
+    "log_level": "info"   // Clean production-ready output
+  }
+}
+```
+
+**Technical Benefits:**
+
+- **Production Ready**: Clean log output suitable for production environments
+- **Consistent Behavior**: All components respect global log level configuration
+- **Performance Improvement**: Reduced I/O overhead by eliminating unnecessary debug output
+- **Debugging Flexibility**: Easy to enable debug mode by changing config to `"log_level": "debug"`
+- **Thread Safety**: Concurrent log level changes handled safely
+- **Backward Compatibility**: Existing `log.Printf` calls continue to work
+
+**Supported Log Levels:**
+- `"debug"` - Shows all messages (development/troubleshooting)
+- `"info"` - Shows informational, warning, and error messages (recommended for production)
+- `"warn"` - Shows warning and error messages only
+- `"error"` - Shows error messages only (minimal output)
+
+**Migration Impact:**
+
+**Before Migration:**
+```
+2025/11/25 16:51:49 [DEBUG] About to send replication command using SimpleQuery
+2025/11/25 16:51:49 [DEBUG] Writing query message to connection  
+2025/11/25 16:51:49 [DEBUG] Command sent, waiting for CopyBothResponse
+2025/11/25 16:51:49 [DEBUG] Received initial message type: *pgproto3.CopyBothResponse
+... 30+ more debug lines per connection
+```
+
+**After Migration (with log_level: "info"):**
+```
+2025/11/25 16:51:49 Set log level to: info
+2025/11/25 16:51:49 PostgreSQL connection configured successfully
+2025/11/25 16:51:49 Starting logical replication from LSN: 0/19DC6A0
+... only essential information
+```
+
+**Configuration Examples:**
+
+```json
+{
+  "global": {
+    "log_level": "info"     // Recommended for production
+  }
+}
+```
+
+```json
+{
+  "global": {  
+    "log_level": "debug"    // For development/troubleshooting
+  }
+}
+```
+
+This improvement significantly enhances the production experience by providing clean, configurable logging while maintaining full debugging capabilities when needed.
+
+---
+
 ## [v1.2.5] - 2025-11-25
 
 ### 🐛 Bug Fixes

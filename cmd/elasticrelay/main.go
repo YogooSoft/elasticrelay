@@ -17,6 +17,7 @@ import (
 	"github.com/yogoosoft/elasticrelay/internal/config"
 	mysql_connector "github.com/yogoosoft/elasticrelay/internal/connectors/mysql"
 	postgresql_connector "github.com/yogoosoft/elasticrelay/internal/connectors/postgresql"
+	"github.com/yogoosoft/elasticrelay/internal/logger"
 	orchestrator "github.com/yogoosoft/elasticrelay/internal/orchestrator"
 	es_sink "github.com/yogoosoft/elasticrelay/internal/sink/es"
 	transform "github.com/yogoosoft/elasticrelay/internal/transform"
@@ -88,6 +89,12 @@ func main() {
 		orchServer, err := orchestrator.NewMultiOrchestrator("localhost:" + *port)
 		if err != nil {
 			log.Fatalf("failed to create multi orchestrator server: %v", err)
+		}
+
+		// Set global log level from configuration
+		if multiCfg.Global.LogLevel != "" {
+			logger.SetLogLevel(multiCfg.Global.LogLevel)
+			log.Printf("Set log level to: %s", multiCfg.Global.LogLevel)
 		}
 
 		// Load multi-configuration

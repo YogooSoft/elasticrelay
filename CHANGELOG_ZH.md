@@ -1,5 +1,173 @@
 # ElasticRelay 修改日志
 
+## [v1.2.6] - 2025-11-25
+
+### 🚀 功能改进
+
+#### 实现了全局日志级别控制系统
+
+**问题描述：**
+
+应用程序存在不一致的日志级别行为，在配置中设置 `log_level: "info"` 后仍会显示大量的 DEBUG 日志。这是由于 PostgreSQL 连接器中硬编码的调试消息以及缺乏集中式日志级别过滤系统造成的，使得生产部署环境充斥着不必要的调试输出信息。
+
+**根本原因：**
+
+1. **缺少日志级别基础设施**：没有集中的日志系统来强制执行跨所有组件的日志级别过滤
+2. **硬编码的 DEBUG 消息**：PostgreSQL WAL 解析器包含 34+ 个硬编码的 `log.Printf("[DEBUG] ...")` 语句，这些语句忽略配置设置
+3. **配置未应用**：全局日志级别从配置中加载但从未应用来控制实际的日志行为
+
+**实现方案：**
+
+#### 1. 创建集中式日志系统
+
+**新文件：** `internal/logger/logger.go`
+
+**功能特性：**
+```go
+// 支持的日志级别
+type LogLevel int
+const (
+    DEBUG LogLevel = iota  // 最详细
+    INFO                   // 默认生产级别  
+    WARN                   // 仅警告
+    ERROR                  // 仅错误
+)
+
+// 使用示例
+logger.Debug("调试信息")         // 仅在级别 = DEBUG 时显示
+logger.Info("重要信息")          // 在级别 <= INFO 时显示  
+logger.Warn("警告消息")          // 在级别 <= WARN 时显示
+logger.Error("发生错误")         // 始终显示
+```
+
+**线程安全实现：**
+- 带互斥锁保护的全局日志级别
+- 支持运行时级别更改
+- 与现有 `log.Printf` 调用兼容
+
+#### 2. 集成日志级别配置
+
+**文件：** `cmd/elasticrelay/main.go`
+
+**修复前：**
+```go
+// 配置已加载但日志级别从未应用
+multiCfg, err := config.LoadMultiConfig(*configFile)
+// 无论配置如何，日志级别始终保持默认值
+```
+
+**修复后：**
+```go
+// 从配置设置全局日志级别
+if multiCfg.Global.LogLevel != "" {
+    logger.SetLogLevel(multiCfg.Global.LogLevel)
+    log.Printf("Set log level to: %s", multiCfg.Global.LogLevel)
+}
+```
+
+#### 3. 修复 PostgreSQL 连接器中的硬编码调试日志
+
+**文件：** `internal/connectors/postgresql/wal_parser.go`
+
+**修复前：**
+```go
+log.Printf("[DEBUG] About to send replication command using SimpleQuery")
+log.Printf("[DEBUG] Writing query message to connection") 
+log.Printf("[DEBUG] Command sent, waiting for CopyBothResponse")
+// ... 还有 34+ 个硬编码调试消息
+```
+
+**修复后：**
+```go
+logger.Debug("About to send replication command using SimpleQuery")
+logger.Debug("Writing query message to connection")
+logger.Debug("Command sent, waiting for CopyBothResponse")
+// 所有调试消息现在都遵循全局日志级别
+```
+
+**批量替换：**
+- 将所有 `log.Printf("[DEBUG] ...)` 替换为 `logger.Debug(...)`
+- 向 PostgreSQL 连接器添加 logger 导入
+- 保持相同的调试信息但具有正确的级别控制
+
+#### 4. 更新配置文件
+
+**文件：** `config/postgresql_config.json`
+
+**修复前：**
+```json
+{
+  "global": {
+    "log_level": "debug"  // 导致详细输出
+  }
+}
+```
+
+**修复后：**
+```json
+{
+  "global": {
+    "log_level": "info"   // 干净的生产就绪输出
+  }
+}
+```
+
+**技术优势：**
+
+- **生产就绪**：适合生产环境的干净日志输出
+- **一致行为**：所有组件都遵循全局日志级别配置
+- **性能提升**：通过消除不必要的调试输出减少 I/O 开销
+- **调试灵活性**：通过将配置更改为 `"log_level": "debug"` 轻松启用调试模式
+- **线程安全**：并发日志级别更改得到安全处理
+- **向后兼容**：现有 `log.Printf` 调用继续正常工作
+
+**支持的日志级别：**
+- `"debug"` - 显示所有消息（开发/故障排除）
+- `"info"` - 显示信息、警告和错误消息（推荐用于生产）
+- `"warn"` - 仅显示警告和错误消息
+- `"error"` - 仅显示错误消息（最小输出）
+
+**迁移影响：**
+
+**迁移前：**
+```
+2025/11/25 16:51:49 [DEBUG] About to send replication command using SimpleQuery
+2025/11/25 16:51:49 [DEBUG] Writing query message to connection  
+2025/11/25 16:51:49 [DEBUG] Command sent, waiting for CopyBothResponse
+2025/11/25 16:51:49 [DEBUG] Received initial message type: *pgproto3.CopyBothResponse
+... 每个连接 30+ 个调试行
+```
+
+**迁移后（log_level: "info"）：**
+```
+2025/11/25 16:51:49 Set log level to: info
+2025/11/25 16:51:49 PostgreSQL connection configured successfully
+2025/11/25 16:51:49 Starting logical replication from LSN: 0/19DC6A0
+... 仅基本信息
+```
+
+**配置示例：**
+
+```json
+{
+  "global": {
+    "log_level": "info"     // 推荐用于生产
+  }
+}
+```
+
+```json
+{
+  "global": {  
+    "log_level": "debug"    // 用于开发/故障排除
+  }
+}
+```
+
+这一改进通过提供干净、可配置的日志记录显著增强了生产体验，同时在需要时保持完整的调试能力。
+
+---
+
 ## [v1.2.5] - 2025-11-25
 
 ### 🐛 Bug 修复

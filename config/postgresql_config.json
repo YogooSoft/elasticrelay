@@ -98,7 +98,7 @@
     }
   ],
   "global": {
-    "log_level": "debug",
+    "log_level": "info",
     "metrics_port": 8080,
     "grpc_port": 50051,
     "dlq_config": {
