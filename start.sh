@@ -4,8 +4,8 @@ cd "$(dirname "$0")"
 
 # Configuration
 BINARY="./bin/elasticrelay"
-#CONFIG="./config/postgresql_config.json"
-CONFIG="./config/mysql_config.json"
+CONFIG="./config/postgresql_config.json"
+#CONFIG="./config/mysql_config.json"
 PORT="50051"
 LOG_DIR="./logs"
 PID_FILE="./logs/elasticrelay.pid"
@@ -58,5 +58,18 @@ else
     echo "Starting in foreground mode (use Ctrl+C to stop)..."
     echo "Use '$0 -d' to start in background mode."
     echo ""
-    "$BINARY" -config "$CONFIG" -port "$PORT"
+    
+    # Start the process in background to get its PID
+    "$BINARY" -config "$CONFIG" -port "$PORT" &
+    PROCESS_PID=$!
+    
+    # Write the actual process PID to file
+    echo $PROCESS_PID > "$PID_FILE"
+    echo "ElasticRelay started in foreground with PID: $PROCESS_PID"
+    
+    # Set up cleanup trap to remove PID file and kill process on exit
+    trap 'echo "Shutting down..."; kill $PROCESS_PID 2>/dev/null; rm -f "$PID_FILE"; exit' EXIT INT TERM
+    
+    # Wait for the process to finish
+    wait $PROCESS_PID
 fi

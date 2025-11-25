@@ -640,21 +640,28 @@ func (j *MultiJob) needsInitialSync() bool {
 		return false
 	}
 
-	// 2. Check if valid checkpoint exists
+	// 2. Check if force_initial_sync is enabled - this overrides all other checks
+	if j.shouldForceInitialSync() {
+		log.Printf("MultiJob '%s': force_initial_sync enabled, will perform initial sync", j.ID)
+		return true
+	}
+
+	// 3. Check if valid checkpoint exists
 	if j.hasValidCheckpoint() {
 		log.Printf("MultiJob '%s': Valid checkpoint found, skipping initial sync", j.ID)
 		return false
 	}
 
-	// 3. Check if target system already has data for this job
+	// 4. Check if target system already has data for this job
 	if j.targetSystemHasData() {
 		log.Printf("MultiJob '%s': Target system already has data, checking consistency", j.ID)
 		// If target has data but no checkpoint, this might be a manual import
 		// In production, you might want to compare source vs target counts
-		return j.shouldForceInitialSync()
+		log.Printf("MultiJob '%s': Target system has data but no checkpoint, skipping initial sync for safety", j.ID)
+		return false
 	}
 
-	// 4. Default: If no checkpoint and no target data, definitely need initial sync
+	// 5. Default: If no checkpoint and no target data, definitely need initial sync
 	log.Printf("MultiJob '%s': No checkpoint and no target data found, initial sync needed", j.ID)
 	return true
 }

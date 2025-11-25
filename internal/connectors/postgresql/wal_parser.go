@@ -113,6 +113,7 @@ type WALParser struct {
 	relations    map[uint32]*RelationInfo
 	currentTxn   *TransactionInfo
 	tableFilters []string
+	typeMapper   *TypeMapper
 }
 
 // NewWALParser creates a new WAL parser
@@ -124,6 +125,7 @@ func NewWALParser(conn *pgconn.PgConn, slotName, publication, startLSN string, t
 		startLSN:     startLSN,
 		relations:    make(map[uint32]*RelationInfo),
 		tableFilters: tableFilters,
+		typeMapper:   NewTypeMapper(),
 	}
 }
 
@@ -272,8 +274,22 @@ func (wp *WALParser) processMessages(ctx context.Context, handler *EventHandler)
 			// Update last received LSN from XLogData messages
 			if copyData, ok := msg.(*pgproto3.CopyData); ok && len(copyData.Data) > 0 {
 				if copyData.Data[0] == 'w' && len(copyData.Data) >= 25 {
-					lastReceivedLSN = binary.BigEndian.Uint64(copyData.Data[9:17])
-					log.Printf("Updated LSN to %X/%X", uint32(lastReceivedLSN>>32), uint32(lastReceivedLSN))
+					// Extract walStart and walEnd from XLogData message
+					// Message format: 'w' + walStart(8) + walEnd(8) + sendTime(8) + data
+					walStart := binary.BigEndian.Uint64(copyData.Data[1:9])
+					walEnd := binary.BigEndian.Uint64(copyData.Data[9:17])
+
+					// Use walStart as the LSN position (walEnd is usually 0 in streaming mode)
+					if walStart > 0 {
+						lastReceivedLSN = walStart
+					} else if walEnd > 0 {
+						lastReceivedLSN = walEnd
+					}
+
+					log.Printf("[DEBUG] LSN update: walStart=%X/%X, walEnd=%X/%X, using LSN=%X/%X",
+						uint32(walStart>>32), uint32(walStart),
+						uint32(walEnd>>32), uint32(walEnd),
+						uint32(lastReceivedLSN>>32), uint32(lastReceivedLSN))
 				}
 			}
 		case err := <-errChan:
@@ -336,9 +352,10 @@ func (wp *WALParser) parseXLogData(data []byte, handler *EventHandler) error {
 	walEnd := binary.BigEndian.Uint64(data[8:16])
 	sendTime := int64(binary.BigEndian.Uint64(data[16:24]))
 
-	_ = walStart
-	_ = walEnd
-	_ = sendTime
+	log.Printf("[DEBUG] XLogData: walStart=%X/%X, walEnd=%X/%X, sendTime=%d",
+		uint32(walStart>>32), uint32(walStart),
+		uint32(walEnd>>32), uint32(walEnd),
+		sendTime)
 
 	// Parse logical decoding message
 	if len(data) > 24 {
@@ -743,7 +760,15 @@ func (wp *WALParser) createChangeEvent(operation, lsn string, relationID uint32,
 	dataMap["_schema"] = relation.Namespace
 
 	for _, col := range data.Columns {
-		dataMap[col.Name] = col.Value
+		// Use TypeMapper to convert PostgreSQL values to Elasticsearch-compatible format
+		convertedValue, err := wp.typeMapper.ConvertValue(col.Value, col.TypeID)
+		if err != nil {
+			log.Printf("Warning: failed to convert column '%s' (type OID %d): %v, using raw value",
+				col.Name, col.TypeID, err)
+			dataMap[col.Name] = col.Value
+		} else {
+			dataMap[col.Name] = convertedValue
+		}
 	}
 
 	jsonData, err := json.Marshal(dataMap)

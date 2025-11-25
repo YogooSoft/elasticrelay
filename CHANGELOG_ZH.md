@@ -1,5 +1,254 @@
 # ElasticRelay 修改日志
 
+## [v1.2.5] - 2025-11-25
+
+### 🐛 Bug 修复
+
+#### 修复 MySQL 日期时间格式在 CDC 同步中的问题
+
+**问题描述：**
+
+MySQL CDC 同步遇到了严重的日期时间相关故障，主要有两个问题：
+
+1. **缺少日期时间解析函数**：带有日期时间字段的 CDC 事件在 Elasticsearch 中解析失败，出现 `document_parsing_exception: failed to parse field [created_at] of type [date]` 错误，导致所有事件被发送到 DLQ（死信队列）。
+
+2. **日期时间格式不一致**：初始同步和 CDC 同步对相同数据产生不同的日期时间格式，在 Elasticsearch 索引中造成数据不一致。
+
+**根本原因：**
+
+1. **缺少 `tryParseDateTime` 函数**：MySQL 连接器在 CDC 事件处理和初始快照处理中都调用了一个未定义的 `tryParseDateTime` 函数，导致编译错误并阻止正确的日期时间转换。
+
+2. **时区处理不一致**：
+   - 初始同步使用带有 `loc=Local` 的 DSN，返回本地时区格式（`+08:00`）
+   - CDC 同步处理 binlog 数据时没有时区转换，默认使用不同格式
+   - 结果：同一张表中存在混合的日期时间格式
+
+**修复方案：**
+
+**文件：** `internal/connectors/mysql/mysql.go`
+
+#### 1. 实现缺少的 `tryParseDateTime` 函数
+
+**添加的函数：**
+```go
+// tryParseDateTime 尝试解析 MySQL 日期时间字符串并转换为 RFC3339 格式
+func tryParseDateTime(value string) (string, bool) {
+    // 要尝试的 MySQL 日期时间格式（从最具体的开始）
+    formats := []string{
+        "2006-01-02 15:04:05.999999999", // 带纳秒
+        "2006-01-02 15:04:05.999999",    // 带微秒
+        "2006-01-02 15:04:05.999",       // 带毫秒
+        "2006-01-02 15:04:05",           // 标准 MySQL DATETIME 格式
+        "2006-01-02",                    // MySQL DATE 格式
+        "15:04:05",                      // MySQL TIME 格式
+        time.RFC3339Nano,                // RFC3339 带纳秒
+        time.RFC3339,                    // RFC3339
+    }
+    
+    for _, format := range formats {
+        if t, err := time.Parse(format, value); err == nil {
+            // 转换为 UTC 并格式化为 RFC3339Nano 以确保 Elasticsearch 兼容性
+            return t.UTC().Format(time.RFC3339Nano), true
+        }
+    }
+    
+    // 如果所有解析尝试都失败，则不是日期时间字符串
+    return "", false
+}
+```
+
+#### 2. 增强 CDC 事件处理
+
+**修复前（CDC）：**
+```go
+case []byte:
+    s := string(v)
+    if parsed, ok := tryParseDateTime(s); ok {  // ❌ 函数不存在
+        dataMap[colName] = parsed
+    } else {
+        // 回退到字符串
+        dataMap[colName] = s
+    }
+```
+
+**修复后（CDC）：**
+```go
+case []byte:
+    s := string(v)
+    if parsed, ok := tryParseDateTime(s); ok {  // ✅ 函数现在存在
+        dataMap[colName] = parsed  // 转换为 UTC RFC3339Nano
+    } else if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+        dataMap[colName] = i
+    } // ... 其他类型转换
+```
+
+#### 3. 增强初始同步处理
+
+**修复前（快照）：**
+```go
+case time.Time:
+    dataMap[colName] = v.Format(time.RFC3339Nano)  // ❌ 使用本地时区
+```
+
+**修复后（快照）：**
+```go
+case time.Time:
+    dataMap[colName] = v.UTC().Format(time.RFC3339Nano)  // ✅ 强制 UTC 转换
+
+case string:
+    // 处理字符串日期时间值
+    if parsed, ok := tryParseDateTime(v); ok {
+        dataMap[colName] = parsed  // ✅ 一致的 UTC 格式
+    } else {
+        dataMap[colName] = v
+    }
+```
+
+#### 4. 统一时区处理
+
+**问题示例：**
+```json
+// 修复前 - 同一表中格式不一致：
+{"created_at": "2025-11-24T14:37:38Z"}        // 来自 CDC
+{"created_at": "2025-11-24T14:37:38+08:00"}   // 来自初始同步
+
+// 修复后 - 一致的 UTC 格式：
+{"created_at": "2025-11-24T14:37:38.000000000Z"}  // 所有来源
+{"updated_at": "2025-11-25T13:31:38.000000000Z"}  // 所有来源
+```
+
+**技术影响：**
+
+- **Elasticsearch 兼容性**：所有日期时间字段现在使用带 UTC 时区的 RFC3339Nano 格式
+- **数据一致性**：初始同步和 CDC 同步产生相同的日期时间格式
+- **错误消除**：不再有日期时间字段的 `document_parsing_exception` 错误
+- **DLQ 减少**：消除了与日期时间相关的故障进入死信队列
+- **多格式支持**：处理各种 MySQL 日期时间格式（DATE、TIME、DATETIME、TIMESTAMP）
+
+**支持的 MySQL 日期时间格式：**
+- `2006-01-02 15:04:05.999999999`（带纳秒的 DATETIME）
+- `2006-01-02 15:04:05`（标准 DATETIME）
+- `2006-01-02`（仅 DATE）
+- `15:04:05`（仅 TIME）
+- 现有的 RFC3339 格式
+
+**输出格式：**
+所有日期时间字段一致格式化为：`2025-11-24T14:37:38.000000000Z`
+
+**迁移说明：**
+
+对于存在不一致日期时间格式的现有数据，建议：
+1. 删除现有索引：`curl -X DELETE "http://your-es:9200/elasticrelay_mysql-*"`
+2. 重启 ElasticRelay 以触发一致格式的全新初始同步
+3. 所有新数据将保持一致的 UTC 日期时间格式
+
+---
+
+## [v1.2.4] - 2025-11-25
+
+### 🐛 Bug 修复
+
+#### 修复 `force_initial_sync` 配置选项不生效的问题
+
+**问题描述：**
+
+当 `force_initial_sync` 配置选项设置为 `true` 时，该选项被系统忽略。即使启用了此选项，如果存在 checkpoint，系统仍会跳过初始同步，直接进入 CDC 模式。这导致用户无法在需要时强制执行全新的初始同步。
+
+**根本原因：**
+
+该 bug 位于 `multi_orchestrator.go` 文件的 `needsInitialSync()` 函数中。函数的逻辑在检查 `force_initial_sync` 配置**之前**就已经检查了 checkpoint 是否存在：
+
+1. 首先检查 `initial_sync` 是否启用
+2. 然后检查是否存在有效的 checkpoint → **如果存在，立即返回 false**
+3. `force_initial_sync` 检查仅在"目标有数据但没有 checkpoint"的情况下执行
+4. 结果：当 checkpoint 存在时，`force_initial_sync` 永远不会被评估
+
+**修复方案：**
+
+**文件：** `internal/orchestrator/multi_orchestrator.go`
+
+**修复前：**
+```go
+func (j *MultiJob) needsInitialSync() bool {
+    // 1. 检查配置
+    if !j.isInitialSyncEnabledInConfig() {
+        return false
+    }
+    
+    // 2. 检查是否存在有效的 checkpoint
+    if j.hasValidCheckpoint() {
+        return false  // ❌ 在这里返回，force_initial_sync 永远不会被检查
+    }
+    
+    // 3. 检查目标系统
+    if j.targetSystemHasData() {
+        return j.shouldForceInitialSync()  // 仅在特定情况下检查
+    }
+    
+    return true
+}
+```
+
+**修复后：**
+```go
+func (j *MultiJob) needsInitialSync() bool {
+    // 1. 检查配置
+    if !j.isInitialSyncEnabledInConfig() {
+        return false
+    }
+    
+    // 2. 优先检查 force_initial_sync - 覆盖所有其他检查
+    if j.shouldForceInitialSync() {
+        log.Printf("force_initial_sync 已启用，将执行初始同步")
+        return true  // ✅ 无论 checkpoint 是否存在都强制初始同步
+    }
+    
+    // 3. 检查是否存在有效的 checkpoint
+    if j.hasValidCheckpoint() {
+        return false
+    }
+    
+    // 4. 检查目标系统
+    if j.targetSystemHasData() {
+        return false
+    }
+    
+    return true
+}
+```
+
+**技术影响：**
+
+- `force_initial_sync` 现在在 checkpoint 验证**之前**被检查
+- 当设置 `force_initial_sync: true` 时，系统将：
+  - 忽略现有的 checkpoint
+  - 忽略目标 Elasticsearch 索引中的现有数据
+  - 始终执行全新的初始同步
+- 这特别适用于：
+  - 开发和测试场景
+  - 数据一致性恢复
+  - 在架构更改后强制完全重新同步
+
+**配置示例：**
+
+```json
+{
+  "jobs": [
+    {
+      "id": "mysql-to-es-cdc",
+      "options": {
+        "initial_sync": true,
+        "force_initial_sync": true
+      }
+    }
+  ]
+}
+```
+
+**警告：** 在生产环境中使用 `force_initial_sync: true` 需要谨慎，因为它会在每次重启时重新同步所有数据。建议仅在特定场景下临时使用此选项，然后将其禁用。
+
+---
+
 ## [v1.2.3] - 2025-11-24
 
 ### 🎉 重大功能

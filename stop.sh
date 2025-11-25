@@ -16,7 +16,25 @@ fi
 # If no PID file or PID is invalid, try to find the process
 if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
     echo "PID file not found or process not running, searching for process..."
-    PID=$(pgrep -f "elasticrelay.*config.*parallel_config.json")
+    # Try multiple patterns to find the elasticrelay process
+    echo "Searching for 'bin/elasticrelay.*-config'..."
+    PID=$(pgrep -f "bin/elasticrelay.*-config")
+    if [ -z "$PID" ]; then
+        echo "Searching for 'elasticrelay.*-config'..."
+        PID=$(pgrep -f "elasticrelay.*-config")
+    fi
+    if [ -z "$PID" ]; then
+        echo "Searching for 'elasticrelay'..."
+        PID=$(pgrep -f "elasticrelay")
+    fi
+    
+    # If we found multiple processes, show them
+    if [ -n "$PID" ]; then
+        echo "Found process(es): $PID"
+        # If multiple PIDs, take the first one
+        PID=$(echo "$PID" | head -n1)
+        echo "Using PID: $PID"
+    fi
 fi
 
 if [ -z "$PID" ]; then

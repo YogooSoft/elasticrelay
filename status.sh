@@ -43,7 +43,13 @@ else
     echo "PID file: Not found"
     
     # Try to find process anyway
-    FOUND_PID=$(pgrep -f "elasticrelay.*config.*parallel_config.json")
+    FOUND_PID=$(pgrep -f "bin/elasticrelay.*-config")
+    if [ -z "$FOUND_PID" ]; then
+        FOUND_PID=$(pgrep -f "elasticrelay.*-config")
+    fi
+    if [ -z "$FOUND_PID" ]; then
+        FOUND_PID=$(pgrep -f "elasticrelay")
+    fi
     if [ -n "$FOUND_PID" ]; then
         echo "Status: ⚠️  RUNNING (no PID file, PID: $FOUND_PID)"
         echo "Note: Service was started manually or PID file was removed"

@@ -316,12 +316,24 @@ func (tm *TypeMapper) handleTimestamp(value interface{}) (interface{}, error) {
 		return v.Format(time.RFC3339Nano), nil
 	case string:
 		// Try to parse and reformat for consistency
-		if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
-			return t.Format(time.RFC3339Nano), nil
+		// PostgreSQL timestamp formats to try (most specific first)
+		formats := []string{
+			"2006-01-02 15:04:05.999999999", // with nanoseconds
+			"2006-01-02 15:04:05.999999",    // with microseconds
+			"2006-01-02 15:04:05.999",       // with milliseconds
+			"2006-01-02 15:04:05",           // without fractional seconds
+			time.RFC3339Nano,                // RFC3339 with nanoseconds
+			time.RFC3339,                    // RFC3339
 		}
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			return t.Format(time.RFC3339Nano), nil
+		
+		for _, format := range formats {
+			if t, err := time.Parse(format, v); err == nil {
+				return t.Format(time.RFC3339Nano), nil
+			}
 		}
+		
+		// If all parsing attempts fail, log a warning and return the original value
+		log.Printf("Warning: failed to parse timestamp '%s', returning as-is", v)
 		return v, nil
 	case []byte:
 		return tm.handleTimestamp(string(v))
@@ -337,12 +349,32 @@ func (tm *TypeMapper) handleTimestampTZ(value interface{}) (interface{}, error) 
 		return v.UTC().Format(time.RFC3339Nano), nil
 	case string:
 		// Try to parse and convert to UTC
-		if t, err := time.Parse("2006-01-02 15:04:05-07", v); err == nil {
-			return t.UTC().Format(time.RFC3339Nano), nil
+		// PostgreSQL timestamptz formats to try (most specific first)
+		formats := []string{
+			"2006-01-02 15:04:05.999999999-07:00", // with nanoseconds and timezone
+			"2006-01-02 15:04:05.999999999-07",    // with nanoseconds and timezone (short)
+			"2006-01-02 15:04:05.999999-07:00",    // with microseconds and timezone
+			"2006-01-02 15:04:05.999999-07",       // with microseconds and timezone (short)
+			"2006-01-02 15:04:05.999-07:00",       // with milliseconds and timezone
+			"2006-01-02 15:04:05.999-07",          // with milliseconds and timezone (short)
+			"2006-01-02 15:04:05-07:00",           // without fractional seconds
+			"2006-01-02 15:04:05-07",              // without fractional seconds (short)
+			"2006-01-02 15:04:05.999999999+07:00", // positive timezone with nanoseconds
+			"2006-01-02 15:04:05.999999999+07",    // positive timezone with nanoseconds (short)
+			"2006-01-02 15:04:05.999999+07:00",    // positive timezone with microseconds
+			"2006-01-02 15:04:05.999999+07",       // positive timezone with microseconds (short)
+			time.RFC3339Nano,                      // RFC3339 with nanoseconds
+			time.RFC3339,                          // RFC3339
 		}
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			return t.UTC().Format(time.RFC3339Nano), nil
+		
+		for _, format := range formats {
+			if t, err := time.Parse(format, v); err == nil {
+				return t.UTC().Format(time.RFC3339Nano), nil
+			}
 		}
+		
+		// If all parsing attempts fail, log a warning and return the original value
+		log.Printf("Warning: failed to parse timestamptz '%s', returning as-is", v)
 		return v, nil
 	case []byte:
 		return tm.handleTimestampTZ(string(v))

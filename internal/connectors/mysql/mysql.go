@@ -26,6 +26,31 @@ const (
 	checkpointFilePath = "checkpoints.json"
 )
 
+// tryParseDateTime attempts to parse MySQL datetime strings and convert them to RFC3339 format
+func tryParseDateTime(value string) (string, bool) {
+	// MySQL datetime formats to try (most specific first)
+	formats := []string{
+		"2006-01-02 15:04:05.999999999", // with nanoseconds
+		"2006-01-02 15:04:05.999999",    // with microseconds  
+		"2006-01-02 15:04:05.999",       // with milliseconds
+		"2006-01-02 15:04:05",           // standard MySQL DATETIME format
+		"2006-01-02",                    // MySQL DATE format
+		"15:04:05",                      // MySQL TIME format
+		time.RFC3339Nano,                // RFC3339 with nanoseconds
+		time.RFC3339,                    // RFC3339
+	}
+	
+	for _, format := range formats {
+		if t, err := time.Parse(format, value); err == nil {
+			// Convert to UTC and format as RFC3339Nano for Elasticsearch compatibility
+			return t.UTC().Format(time.RFC3339Nano), true
+		}
+	}
+	
+	// If all parsing attempts fail, it's not a datetime string
+	return "", false
+}
+
 // eventHandler handles the binlog events.
 type eventHandler struct {
 	stream            pb.ConnectorService_StartCdcServer
@@ -193,8 +218,10 @@ func (h *eventHandler) handleRowsEvent(header *replication.EventHeader, table *r
 				case []byte:
 					// Ensure proper handling of UTF-8 encoded byte data
 					s := string(v)
-					// Try numeric parsing first
-					if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+					// Try datetime parsing first for potential datetime fields
+					if parsed, ok := tryParseDateTime(s); ok {
+						dataMap[colName] = parsed
+					} else if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 						dataMap[colName] = i
 					} else if f, err := strconv.ParseFloat(s, 64); err == nil {
 						dataMap[colName] = f
@@ -209,8 +236,15 @@ func (h *eventHandler) handleRowsEvent(header *replication.EventHeader, table *r
 						}
 						dataMap[colName] = s
 					}
+				case string:
+					// Handle string datetime values
+					if parsed, ok := tryParseDateTime(v); ok {
+						dataMap[colName] = parsed
+					} else {
+						dataMap[colName] = v
+					}
 				case time.Time:
-					dataMap[colName] = v.Format(time.RFC3339Nano)
+					dataMap[colName] = v.UTC().Format(time.RFC3339Nano)
 				default:
 					dataMap[colName] = v
 				}
@@ -382,8 +416,10 @@ func (s *Server) BeginSnapshot(req *pb.BeginSnapshotRequest, stream pb.Connector
 				case []byte:
 					// Ensure proper handling of UTF-8 encoded byte data
 					s := string(v)
-					// Try numeric parsing first
-					if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+					// Try datetime parsing first for potential datetime fields
+					if parsed, ok := tryParseDateTime(s); ok {
+						dataMap[colName] = parsed
+					} else if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 						dataMap[colName] = i
 					} else if f, err := strconv.ParseFloat(s, 64); err == nil {
 						dataMap[colName] = f
@@ -398,8 +434,15 @@ func (s *Server) BeginSnapshot(req *pb.BeginSnapshotRequest, stream pb.Connector
 						}
 						dataMap[colName] = s
 					}
+				case string:
+					// Handle string datetime values  
+					if parsed, ok := tryParseDateTime(v); ok {
+						dataMap[colName] = parsed
+					} else {
+						dataMap[colName] = v
+					}
 				case time.Time:
-					dataMap[colName] = v.Format(time.RFC3339Nano)
+					dataMap[colName] = v.UTC().Format(time.RFC3339Nano)
 				default:
 					dataMap[colName] = v
 				}

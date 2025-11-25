@@ -1,5 +1,254 @@
 # ElasticRelay Changelog
 
+## [v1.2.5] - 2025-11-25
+
+### 🐛 Bug Fixes
+
+#### Fixed MySQL Date/Time Format Issues in CDC Synchronization
+
+**Issue Description:**
+
+MySQL CDC synchronization was experiencing critical date/time related failures with two main problems:
+
+1. **Missing DateTime Parser Function**: CDC events with datetime fields were failing with Elasticsearch parsing errors like `document_parsing_exception: failed to parse field [created_at] of type [date]`, causing all events to be sent to DLQ (Dead Letter Queue).
+
+2. **Inconsistent DateTime Formats**: Initial sync and CDC sync were producing different datetime formats for the same data, causing data inconsistency in Elasticsearch indices.
+
+**Root Causes:**
+
+1. **Missing `tryParseDateTime` Function**: The MySQL connector was calling an undefined `tryParseDateTime` function in both CDC event handling and initial snapshot processing, causing compilation errors and preventing proper datetime conversion.
+
+2. **Timezone Handling Inconsistency**: 
+   - Initial sync used DSN with `loc=Local`, returning local timezone format (`+08:00`)
+   - CDC sync processed binlog data without timezone conversion, defaulting to different formats
+   - Result: Same table had mixed datetime formats
+
+**Fix Solutions:**
+
+**File:** `internal/connectors/mysql/mysql.go`
+
+#### 1. Implemented Missing `tryParseDateTime` Function
+
+**Added Function:**
+```go
+// tryParseDateTime attempts to parse MySQL datetime strings and convert them to RFC3339 format
+func tryParseDateTime(value string) (string, bool) {
+    // MySQL datetime formats to try (most specific first)
+    formats := []string{
+        "2006-01-02 15:04:05.999999999", // with nanoseconds
+        "2006-01-02 15:04:05.999999",    // with microseconds  
+        "2006-01-02 15:04:05.999",       // with milliseconds
+        "2006-01-02 15:04:05",           // standard MySQL DATETIME format
+        "2006-01-02",                    // MySQL DATE format
+        "15:04:05",                      // MySQL TIME format
+        time.RFC3339Nano,                // RFC3339 with nanoseconds
+        time.RFC3339,                    // RFC3339
+    }
+    
+    for _, format := range formats {
+        if t, err := time.Parse(format, value); err == nil {
+            // Convert to UTC and format as RFC3339Nano for Elasticsearch compatibility
+            return t.UTC().Format(time.RFC3339Nano), true
+        }
+    }
+    
+    // If all parsing attempts fail, it's not a datetime string
+    return "", false
+}
+```
+
+#### 2. Enhanced CDC Event Processing
+
+**Before Fix (CDC):**
+```go
+case []byte:
+    s := string(v)
+    if parsed, ok := tryParseDateTime(s); ok {  // ❌ Function didn't exist
+        dataMap[colName] = parsed
+    } else {
+        // fallback to string
+        dataMap[colName] = s
+    }
+```
+
+**After Fix (CDC):**
+```go
+case []byte:
+    s := string(v)
+    if parsed, ok := tryParseDateTime(s); ok {  // ✅ Function now exists
+        dataMap[colName] = parsed  // Converts to UTC RFC3339Nano
+    } else if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+        dataMap[colName] = i
+    } // ... other type conversions
+```
+
+#### 3. Enhanced Initial Sync Processing
+
+**Before Fix (Snapshot):**
+```go
+case time.Time:
+    dataMap[colName] = v.Format(time.RFC3339Nano)  // ❌ Used local timezone
+```
+
+**After Fix (Snapshot):**
+```go
+case time.Time:
+    dataMap[colName] = v.UTC().Format(time.RFC3339Nano)  // ✅ Force UTC conversion
+
+case string:
+    // Handle string datetime values
+    if parsed, ok := tryParseDateTime(v); ok {
+        dataMap[colName] = parsed  // ✅ Consistent UTC format
+    } else {
+        dataMap[colName] = v
+    }
+```
+
+#### 4. Unified Timezone Handling
+
+**Problem Examples:**
+```json
+// Before Fix - Inconsistent formats in same table:
+{"created_at": "2025-11-24T14:37:38Z"}        // From CDC
+{"created_at": "2025-11-24T14:37:38+08:00"}   // From Initial Sync
+
+// After Fix - Consistent UTC format:
+{"created_at": "2025-11-24T14:37:38.000000000Z"}  // All sources
+{"updated_at": "2025-11-25T13:31:38.000000000Z"}  // All sources
+```
+
+**Technical Impact:**
+
+- **Elasticsearch Compatibility**: All datetime fields now use RFC3339Nano format with UTC timezone
+- **Data Consistency**: Initial sync and CDC sync produce identical datetime formats
+- **Error Elimination**: No more `document_parsing_exception` errors for datetime fields
+- **DLQ Reduction**: Eliminates datetime-related failures from going to Dead Letter Queue
+- **Multi-Format Support**: Handles various MySQL datetime formats (DATE, TIME, DATETIME, TIMESTAMP)
+
+**Supported MySQL DateTime Formats:**
+- `2006-01-02 15:04:05.999999999` (DATETIME with nanoseconds)
+- `2006-01-02 15:04:05` (Standard DATETIME)
+- `2006-01-02` (DATE only)
+- `15:04:05` (TIME only)
+- Existing RFC3339 formats
+
+**Output Format:**
+All datetime fields are consistently formatted as: `2025-11-24T14:37:38.000000000Z`
+
+**Migration Notes:**
+
+For existing data with inconsistent datetime formats, it's recommended to:
+1. Delete existing indices: `curl -X DELETE "http://your-es:9200/elasticrelay_mysql-*"`
+2. Restart ElasticRelay to trigger fresh initial sync with consistent formatting
+3. All new data will maintain consistent UTC datetime formatting
+
+---
+
+## [v1.2.4] - 2025-11-25
+
+### 🐛 Bug Fixes
+
+#### Fixed `force_initial_sync` Configuration Not Working
+
+**Issue Description:**
+
+When the `force_initial_sync` configuration option was set to `true`, it was being ignored by the system. Even with this option enabled, if a checkpoint existed, the initial sync would be skipped and the system would proceed directly to CDC mode. This prevented users from forcing a fresh initial synchronization when needed.
+
+**Root Cause:**
+
+The bug was in the `needsInitialSync()` function in `multi_orchestrator.go`. The function's logic checked for existing checkpoints **before** checking the `force_initial_sync` configuration:
+
+1. First, it checked if `initial_sync` was enabled
+2. Then, it checked if a valid checkpoint exists → **If yes, returned false immediately**
+3. The `force_initial_sync` check was only performed when "target has data but no checkpoint"
+4. Result: When checkpoint exists, `force_initial_sync` was never evaluated
+
+**Fix Solution:**
+
+**File:** `internal/orchestrator/multi_orchestrator.go`
+
+**Before Fix:**
+```go
+func (j *MultiJob) needsInitialSync() bool {
+    // 1. Check configuration
+    if !j.isInitialSyncEnabledInConfig() {
+        return false
+    }
+    
+    // 2. Check if valid checkpoint exists
+    if j.hasValidCheckpoint() {
+        return false  // ❌ Returns here, force_initial_sync never checked
+    }
+    
+    // 3. Check target system
+    if j.targetSystemHasData() {
+        return j.shouldForceInitialSync()  // Only checked in specific case
+    }
+    
+    return true
+}
+```
+
+**After Fix:**
+```go
+func (j *MultiJob) needsInitialSync() bool {
+    // 1. Check configuration
+    if !j.isInitialSyncEnabledInConfig() {
+        return false
+    }
+    
+    // 2. Check force_initial_sync first - overrides all other checks
+    if j.shouldForceInitialSync() {
+        log.Printf("force_initial_sync enabled, will perform initial sync")
+        return true  // ✅ Force initial sync regardless of checkpoint
+    }
+    
+    // 3. Check if valid checkpoint exists
+    if j.hasValidCheckpoint() {
+        return false
+    }
+    
+    // 4. Check target system
+    if j.targetSystemHasData() {
+        return false
+    }
+    
+    return true
+}
+```
+
+**Technical Impact:**
+
+- `force_initial_sync` is now checked **before** checkpoint validation
+- When `force_initial_sync: true` is set, the system will:
+  - Ignore existing checkpoints
+  - Ignore existing data in target Elasticsearch indices
+  - Always perform a fresh initial synchronization
+- This is particularly useful for:
+  - Development and testing scenarios
+  - Data consistency recovery
+  - Forcing a complete re-sync after schema changes
+
+**Configuration Example:**
+
+```json
+{
+  "jobs": [
+    {
+      "id": "mysql-to-es-cdc",
+      "options": {
+        "initial_sync": true,
+        "force_initial_sync": true
+      }
+    }
+  ]
+}
+```
+
+**Warning:** Using `force_initial_sync: true` in production should be done with caution, as it will re-sync all data on every restart. It's recommended to use this option temporarily for specific scenarios and then disable it.
+
+---
+
 ## [v1.2.3] - 2025-11-24
 
 ### 🎉 Major Features
