@@ -16,7 +16,9 @@ ElasticRelay is a seamless, heterogeneous data synchronizer designed to provide 
 - **Data Plane (Go)**: The core data synchronization logic is built in Go (1.25.2+) for high concurrency, low memory footprint, and simple deployment. Uses advanced MySQL binlog parsing and Elasticsearch bulk APIs.
 - **Control Plane & GUI (TypeScript/Next.js)**: A rich, interactive UI for configuration and monitoring (in development).
 - **APIs (gRPC)**: Internal communication between components is handled via gRPC for high performance with complete service implementations.
-- **Database Support**: MySQL CDC via binlog parsing (go-mysql library)
+- **Database Support**: 
+  - **MySQL CDC**: Advanced binlog parsing with real-time synchronization (go-mysql library)
+  - **PostgreSQL CDC**: Logical replication with WAL parsing, replication slots, and publications
 - **Elasticsearch Integration**: Official Elasticsearch Go client (v8) with bulk indexing support
 - **Configuration**: JSON-based configuration with automatic format detection and migration
 - **Reliability**: Comprehensive error handling, DLQ system, and checkpoint management
@@ -44,6 +46,20 @@ To quickly get ElasticRelay up and running, follow these three simple steps:
 ### Step 2: Configure
 Edit the configuration file `./config/parallel_config.json` and ensure the database and Elasticsearch connection information is correct.
 
+For PostgreSQL, ensure logical replication is enabled:
+```sql
+-- Enable logical replication in postgresql.conf
+wal_level = logical
+max_replication_slots = 10
+max_wal_senders = 10
+
+-- Create user with replication privileges
+CREATE USER elasticrelay_user WITH LOGIN PASSWORD 'password' REPLICATION;
+GRANT CONNECT ON DATABASE your_database TO elasticrelay_user;
+GRANT USAGE ON SCHEMA public TO elasticrelay_user;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO elasticrelay_user;
+```
+
 ### Step 3: Execute
 ```sh
 ./start.sh
@@ -60,7 +76,8 @@ After completing these steps, ElasticRelay will start monitoring database change
 - Go (1.25.2+)
 - Protobuf Compiler (`protoc`)
 - Elasticsearch (7.x or 8.x)
-- MySQL (5.7+ or 8.x) with binlog enabled
+- **MySQL** (5.7+ or 8.x) with binlog enabled
+- **PostgreSQL** (10+ recommended, 9.4+ minimum) with logical replication enabled
 
 ### Installation
 
@@ -160,6 +177,24 @@ ElasticRelay supports both legacy single-config and modern multi-config formats 
       "database": "elasticrelay",
       "server_id": 100,
       "table_filters": ["users", "orders", "products"]
+    },
+    {
+      "id": "postgresql-main",
+      "type": "postgresql",
+      "host": "localhost",
+      "port": 5432,
+      "user": "elastic_user",
+      "password": "password",
+      "database": "elasticrelay",
+      "table_filters": ["users", "orders", "products"],
+      "options": {
+        "ssl_mode": "disable",
+        "slot_name": "elasticrelay_slot",
+        "publication_name": "elasticrelay_publication",
+        "batch_size": 1000,
+        "max_connections": 10,
+        "parallel_snapshots": true
+      }
     }
   ],
   "sinks": [
@@ -217,6 +252,50 @@ ElasticRelay includes a comprehensive DLQ system for handling failed events:
 - **Manual Management**: Support for manual item inspection and management
 - **Automatic Cleanup**: Resolved items are automatically cleaned up after configurable duration
 
+### PostgreSQL Support
+
+ElasticRelay provides comprehensive PostgreSQL CDC capabilities with advanced features:
+
+#### Core PostgreSQL Features
+- **Logical Replication**: Uses PostgreSQL's native logical replication with `pgoutput` plugin
+- **WAL Parsing**: Advanced Write-Ahead Log parsing for real-time change capture
+- **Replication Slots**: Automatic creation and management of logical replication slots
+- **Publications**: Dynamic publication management for table filtering
+- **LSN Management**: Precise Log Sequence Number tracking for checkpoint/resume functionality
+
+#### Advanced PostgreSQL Capabilities
+- **Connection Pooling**: Intelligent connection pool management with configurable limits
+- **Parallel Snapshots**: Multi-threaded initial data synchronization with chunking strategies
+- **Type Mapping**: Comprehensive PostgreSQL to Elasticsearch type conversion including:
+  - All numeric types (bigint, integer, real, double, numeric)
+  - Text and character types (text, varchar, char)
+  - Date/time types with timezone support (timestamp, timestamptz, date, time)
+  - JSON/JSONB with native object mapping
+  - Array types (integer arrays, text arrays)
+  - Advanced types (UUID, bytea, inet, geometric types)
+- **Performance Optimizations**: 
+  - Adaptive scheduling for large tables
+  - Streaming mode for memory efficiency
+  - Configurable batch sizes and worker pools
+  - Connection lifecycle management
+
+#### PostgreSQL Configuration Options
+```json
+{
+  "type": "postgresql",
+  "options": {
+    "ssl_mode": "disable|require|verify-ca|verify-full",
+    "slot_name": "custom_replication_slot_name",
+    "publication_name": "custom_publication_name",
+    "batch_size": 1000,
+    "max_connections": 10,
+    "min_connections": 2,
+    "parallel_snapshots": true,
+    "enable_performance_monitoring": true
+  }
+}
+```
+
 ### Parallel Processing
 
 Advanced parallel snapshot processing capabilities:
@@ -232,7 +311,9 @@ Advanced parallel snapshot processing capabilities:
 This project is currently in active development (MVP Phase ~95%). The following has been completed:
 
 ### ✅ Completed Features
-- **Core Data Pipeline**: Full MySQL CDC implementation with binlog-based real-time synchronization
+- **Core Data Pipeline**: 
+  - **MySQL CDC**: Full implementation with binlog-based real-time synchronization
+  - **PostgreSQL CDC**: Complete logical replication with WAL parsing, replication slots, and publications
 - **Multi-Table Dynamic Indexing**: Automatic per-table Elasticsearch index creation and management with configurable naming
 - **gRPC Architecture**: Complete service definitions and implementations (Connector, Orchestrator, Sink, Transform, Health)
 - **Advanced Configuration Management**: 
@@ -261,10 +342,14 @@ This project is currently in active development (MVP Phase ~95%). The following 
 - **DLQ Management API**: gRPC/REST endpoints for DLQ inspection and manual operations
 
 ### 📋 Upcoming
-- **Multi-Database Support**: PostgreSQL and MongoDB connectors
+- **MongoDB Support**: MongoDB change streams connector
 - **Advanced GUI Features**: Drag-and-drop field mapping and transformation wizards
 - **DLQ Web UI**: Visual interface for managing failed events
 - **Advanced Governance**: Rich data transformation rules and field-level governance
+- **Enhanced PostgreSQL Features**: 
+  - Custom type extensions support
+  - Advanced geometric type handling
+  - Cross-database transaction coordination
 
 ---
 
