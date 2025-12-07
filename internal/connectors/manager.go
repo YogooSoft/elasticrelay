@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/yogoosoft/elasticrelay/internal/config"
+	"github.com/yogoosoft/elasticrelay/internal/connectors/mongodb"
 	"github.com/yogoosoft/elasticrelay/internal/connectors/mysql"
 	"github.com/yogoosoft/elasticrelay/internal/connectors/postgresql"
 )
@@ -53,8 +54,7 @@ func (cm *ConnectorManager) RegisterDataSource(dataSource *config.DataSourceConf
 	case "postgresql":
 		connector, err = cm.createPostgreSQLConnector(dataSource)
 	case "mongodb":
-		// TODO: Implement MongoDB connector
-		return fmt.Errorf("mongodb connector not implemented yet")
+		connector, err = cm.createMongoDBConnector(dataSource)
 	default:
 		return fmt.Errorf("unsupported data source type: %s", dataSource.Type)
 	}
@@ -108,6 +108,21 @@ func (cm *ConnectorManager) createPostgreSQLConnector(dataSource *config.DataSou
 	}
 
 	return postgresql.NewConnector(legacyConfig)
+}
+
+// createMongoDBConnector creates a MongoDB connector instance
+func (cm *ConnectorManager) createMongoDBConnector(dataSource *config.DataSourceConfig) (*mongodb.Connector, error) {
+	// Convert multi-config to legacy config for MongoDB connector
+	legacyConfig := &config.Config{
+		DBHost:       dataSource.Host,
+		DBPort:       dataSource.Port,
+		DBUser:       dataSource.User,
+		DBPassword:   dataSource.Password,
+		DBName:       dataSource.Database,
+		TableFilters: dataSource.TableFilters, // Used as collection filters
+	}
+
+	return mongodb.NewConnector(legacyConfig)
 }
 
 // UnregisterDataSource removes a data source connector

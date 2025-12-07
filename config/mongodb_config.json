@@ -1,0 +1,65 @@
+{
+  "version": "2.0",
+  "data_sources": [
+    {
+      "id": "mongodb-primary",
+      "name": "Primary MongoDB Replica Set",
+      "type": "mongodb",
+      "host": "localhost",
+      "port": 27017,
+      "user": "elasticrelay_user",
+      "password": "elasticrelay_pass",
+      "database": "elasticrelay",
+      "table_filters": ["users", "orders", "products"],
+      "options": {
+        "replica_set": "rs0",
+        "auth_source": "admin",
+        "read_preference": "primaryPreferred",
+        "max_pool_size": 10,
+        "connect_timeout_ms": 10000,
+        "server_selection_timeout_ms": 5000
+      }
+    }
+  ],
+  "sinks": [
+    {
+      "id": "es-primary",
+      "name": "Primary Elasticsearch",
+      "type": "elasticsearch",
+      "addresses": ["http://localhost:9200"],
+      "options": {
+        "index_prefix": "elasticrelay_mongo",
+        "bulk_size": 1000,
+        "flush_interval": "5s"
+      }
+    }
+  ],
+  "jobs": [
+    {
+      "id": "mongodb-to-es",
+      "name": "MongoDB to Elasticsearch CDC",
+      "source_id": "mongodb-primary",
+      "sink_id": "es-primary",
+      "enabled": true,
+      "description": "Sync MongoDB collections to Elasticsearch in real-time",
+      "options": {
+        "initial_sync": true,
+        "force_initial_sync": false,
+        "batch_size": 100,
+        "flatten_depth": 3,
+        "include_metadata": true
+      }
+    }
+  ],
+  "global": {
+    "log_level": "info",
+    "metrics_port": 8080,
+    "grpc_port": 50051,
+    "dlq_config": {
+      "enabled": true,
+      "storage_path": "./dlq",
+      "max_retries": 3,
+      "retry_delay": "30s"
+    }
+  }
+}
