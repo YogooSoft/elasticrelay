@@ -33,18 +33,16 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
 	@echo "Build completed: $(OUTPUT_DIR)/$(BINARY_NAME)"
 
-# 构建配置迁移工具
+# 构建配置迁移工具（当前不可用 - 需要实现）
 .PHONY: build-migrate
 build-migrate:
-	@echo "Building $(MIGRATE_BINARY)..."
-	@mkdir -p $(OUTPUT_DIR)
-	go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(MIGRATE_BINARY) $(MIGRATE_PACKAGE)
-	@echo "Migration tool build completed: $(OUTPUT_DIR)/$(MIGRATE_BINARY)"
+	@echo "Warning: Migration tool not implemented yet ($(MIGRATE_PACKAGE) not found)"
+	@echo "Skipping migration tool build..."
 
 # 构建所有工具
 .PHONY: build-tools
-build-tools: build build-migrate
-	@echo "All tools built successfully"
+build-tools: build
+	@echo "Main tool built successfully"
 
 # 开发构建（不注入版本信息）
 .PHONY: dev
@@ -72,11 +70,6 @@ build-all: clean
 	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(BINARY_NAME)-darwin-amd64 $(MAIN_PACKAGE)
 	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(BINARY_NAME)-darwin-arm64 $(MAIN_PACKAGE)
 	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(BINARY_NAME)-windows-amd64.exe $(MAIN_PACKAGE)
-	# 迁移工具
-	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(MIGRATE_BINARY)-linux-amd64 $(MIGRATE_PACKAGE)
-	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(MIGRATE_BINARY)-darwin-amd64 $(MIGRATE_PACKAGE)
-	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(MIGRATE_BINARY)-darwin-arm64 $(MIGRATE_PACKAGE)
-	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(OUTPUT_DIR)/$(MIGRATE_BINARY)-windows-amd64.exe $(MIGRATE_PACKAGE)
 	@echo "Multi-platform build completed"
 
 # 运行
@@ -89,21 +82,21 @@ run: build
 dev-run:
 	go run -ldflags "$(LDFLAGS)" $(MAIN_PACKAGE)
 
-# 配置迁移相关目标
+# 配置迁移相关目标（当前不可用）
 .PHONY: migrate-config
-migrate-config: build-migrate
-	@echo "Running config migration..."
-	./scripts/migrate-config.sh
+migrate-config:
+	@echo "Warning: Config migration tool not implemented yet"
+	@echo "Please use the built-in config migration features in the main application"
 
 .PHONY: migrate-config-dry
-migrate-config-dry: build-migrate
-	@echo "Running config migration (dry run)..."
-	./scripts/migrate-config.sh --dry-run
+migrate-config-dry:
+	@echo "Warning: Config migration tool not implemented yet"
+	@echo "Please use the built-in config migration features in the main application"
 
 .PHONY: migrate-config-force
-migrate-config-force: build-migrate
-	@echo "Running config migration (force mode)..."
-	./scripts/migrate-config.sh --force --verbose
+migrate-config-force:
+	@echo "Warning: Config migration tool not implemented yet"
+	@echo "Please use the built-in config migration features in the main application"
 
 # 测试
 .PHONY: test
