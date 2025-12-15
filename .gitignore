@@ -1,208 +1,35 @@
-# ==============================================================================
-# ElasticRelay - Git Ignore Configuration
-# This file specifies intentionally untracked files that Git should ignore
-# ==============================================================================
-
-# Compiled binaries and executables
-/bin/
-/release/
-/test/
-/examples/
-/docs/
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
-# Go test files and coverage
-*.test
-*.out
-*.cover
-*.coverprofile
-coverage.out
-coverage.html
-
-# Go dependency directory
-vendor/
-
-# Go module download cache
-# Note: go.sum should be committed to ensure dependency integrity
-
-# IDE and editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.project
-.settings/
-
-# Operating system files
-.DS_Store
-.DS_Store?
-._*
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# Log files and directories
-logs/
-*.log
-*.log.*
-*-audit.log
-
-# Temporary files
-*.tmp
-*.temp
-*.bak
-*.backup
-*~
-.#*
-
-# Configuration files (uncomment if config contains sensitive data)
-# config.json
-# .env
-
-# Build output directories
-dist/
-build/
-out/
-
-# Database data directories and files
+# Data directories
 data/
 *.db
 *.sqlite
-*.sqlite3
 
-# MySQL specific files
-mysql.conf.local
-my.cnf.local
-*.sql~
-*.sql.bak
+# MongoDB keyfile (contains sensitive authentication data)
+config/mongodb/keyfile
 
-# DLQ (Dead Letter Queue) data files
-dlq/
-*.dlq
-
-# Checkpoint and state files
-checkpoints.json
-checkpoint.json
-*.checkpoint
-
-# Docker related files
-docker-compose.override.yml
-.dockerignore.local
-
-# Environment configuration files
+# Environment files
 .env
 .env.local
 .env.*.local
-.env.production
-.env.staging
 
-# Certificate and key files (security)
-*.pem
-*.key
-*.crt
-*.cert
-*.ca-bundle
-
-# Profiling and debugging files
-*.pprof
-*.prof
-*.trace
-
-# Generated protocol buffer files (if regenerated frequently)
-# Uncomment if you regenerate these files during build
-# *.pb.go
-# *_grpc.pb.go
-
-# Test data and fixtures
-testdata/fixtures/
-test-output/
-*.test-output
-
-# Scripts binary outputs
-scripts/bin/
-
-# Benchmark results
-*.bench
-
-# Memory dumps and core files
-*.dump
-core.*
-*.core
-
-# Local development overrides
-docker-compose.local.yml
-*.local.json
-local-config.*
-
-# Performance and monitoring data
-*.heap
-*.cpu
-*.mem
-
-# Elastic Search data (if running locally)
-elasticsearch/
-es-data/
-
-# Redis data (if running locally)
-redis-data/
-*.rdb
-
-# Backup files
-*.backup.*
-backup-*
-
-# Archive files (unless specifically needed)
-*.tar.gz
-*.zip
-*.rar
-*.7z
-
-# macOS specific
-.Spotlight-V100
-.Trashes
-
-# Windows specific
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-
-# Linux specific
-.fuse_hidden*
-.directory
-.Trash-*
-
-# JetBrains IDEs
+# IDE
 .idea/
-*.iws
-*.iml
-*.ipr
-
-# Visual Studio Code
 .vscode/
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# Vim
-[._]*.s[a-v][a-z]
-[._]*.sw[a-p]
-[._]s[a-rt-v][a-z]
-[._]ss[a-gi-z]
-[._]sw[a-p]
-
-# Emacs
+*.swp
+*.swo
 *~
-\#*\#
-/.emacs.desktop
-/.emacs.desktop.lock
-*.elc
-auto-save-list
-tramp
-.\#*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Docs
+docs/
