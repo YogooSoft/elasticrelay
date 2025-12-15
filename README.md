@@ -44,8 +44,29 @@ To quickly get ElasticRelay up and running, follow these three simple steps:
 ```
 
 ### Step 2: Configure
-Edit the configuration file `./config/parallel_config.json` and ensure the database and Elasticsearch connection information is correct.
 
+#### MongoDB Setup (Required for MongoDB CDC)
+MongoDB requires replica set mode for Change Streams. Run the setup script:
+```sh
+./scripts/reset-mongodb.sh
+```
+
+Or manually:
+```sh
+docker-compose down
+rm -rf ./data/mongodb/*
+docker-compose up -d mongodb
+docker-compose up mongodb-init
+```
+
+Verify MongoDB is ready:
+```sh
+./scripts/verify-mongodb.sh
+```
+
+📚 **See**: `QUICKSTART.md` for detailed MongoDB setup instructions.
+
+#### PostgreSQL Setup
 For PostgreSQL, ensure logical replication is enabled:
 ```sql
 -- Enable logical replication in postgresql.conf
@@ -59,6 +80,9 @@ GRANT CONNECT ON DATABASE your_database TO elasticrelay_user;
 GRANT USAGE ON SCHEMA public TO elasticrelay_user;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO elasticrelay_user;
 ```
+
+#### Configuration Files
+Edit the configuration file `./config/parallel_config.json` and ensure the database and Elasticsearch connection information is correct.
 
 ### Step 3: Execute
 ```sh

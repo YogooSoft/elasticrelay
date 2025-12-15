@@ -26,7 +26,9 @@
       "id": "es-primary",
       "name": "Primary Elasticsearch",
       "type": "elasticsearch",
-      "addresses": ["http://localhost:9200"],
+      "addresses": ["http://172.168.0.100:19200"],
+      "user": "elastic",
+      "password": "zIUPPogxwxCR",
       "options": {
         "index_prefix": "elasticrelay_mongo",
         "bulk_size": 1000,

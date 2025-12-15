@@ -15,6 +15,7 @@ import (
 
 	pb "github.com/yogoosoft/elasticrelay/api/gateway/v1"
 	"github.com/yogoosoft/elasticrelay/internal/config"
+	mongodb_connector "github.com/yogoosoft/elasticrelay/internal/connectors/mongodb"
 	mysql_connector "github.com/yogoosoft/elasticrelay/internal/connectors/mysql"
 	postgresql_connector "github.com/yogoosoft/elasticrelay/internal/connectors/postgresql"
 	"github.com/yogoosoft/elasticrelay/internal/logger"
@@ -109,7 +110,7 @@ func main() {
 
 		// Log connector types that were created
 		for _, ds := range multiCfg.DataSources {
-			log.Printf("%s Connector Server created for data source '%s'", 
+			log.Printf("%s Connector Server created for data source '%s'",
 				strings.Title(ds.Type), ds.ID)
 		}
 
@@ -144,31 +145,43 @@ func main() {
 		if len(multiCfg.DataSources) > 0 {
 			firstDS := multiCfg.DataSources[0]
 			switch firstDS.Type {
-		case "mysql":
-			connectorServer, err = mysql_connector.NewServer(&config.Config{
-				DBHost:       firstDS.Host,
-				DBPort:       firstDS.Port,
-				DBUser:       firstDS.User,
-				DBPassword:   firstDS.Password,
-				DBName:       firstDS.Database,
-				ServerID:     firstDS.ServerID,
-				TableFilters: firstDS.TableFilters,
-			})
-			if err != nil {
-				log.Fatalf("failed to create mysql connector server for multi-config: %v", err)
-			}
-		case "postgresql":
-			connectorServer, err = postgresql_connector.NewServer(&config.Config{
-				DBHost:       firstDS.Host,
-				DBPort:       firstDS.Port,
-				DBUser:       firstDS.User,
-				DBPassword:   firstDS.Password,
-				DBName:       firstDS.Database,
-				TableFilters: firstDS.TableFilters,
-			})
-			if err != nil {
-				log.Fatalf("failed to create postgresql connector server for multi-config: %v", err)
-			}
+			case "mysql":
+				connectorServer, err = mysql_connector.NewServer(&config.Config{
+					DBHost:       firstDS.Host,
+					DBPort:       firstDS.Port,
+					DBUser:       firstDS.User,
+					DBPassword:   firstDS.Password,
+					DBName:       firstDS.Database,
+					ServerID:     firstDS.ServerID,
+					TableFilters: firstDS.TableFilters,
+				})
+				if err != nil {
+					log.Fatalf("failed to create mysql connector server for multi-config: %v", err)
+				}
+			case "postgresql":
+				connectorServer, err = postgresql_connector.NewServer(&config.Config{
+					DBHost:       firstDS.Host,
+					DBPort:       firstDS.Port,
+					DBUser:       firstDS.User,
+					DBPassword:   firstDS.Password,
+					DBName:       firstDS.Database,
+					TableFilters: firstDS.TableFilters,
+				})
+				if err != nil {
+					log.Fatalf("failed to create postgresql connector server for multi-config: %v", err)
+				}
+			case "mongodb":
+				connectorServer, err = mongodb_connector.NewServer(&config.Config{
+					DBHost:       firstDS.Host,
+					DBPort:       firstDS.Port,
+					DBUser:       firstDS.User,
+					DBPassword:   firstDS.Password,
+					DBName:       firstDS.Database,
+					TableFilters: firstDS.TableFilters,
+				})
+				if err != nil {
+					log.Fatalf("failed to create mongodb connector server for multi-config: %v", err)
+				}
 			default:
 				log.Printf("Warning: unsupported data source type '%s', connector server not created", firstDS.Type)
 			}
@@ -178,7 +191,7 @@ func main() {
 		s := grpc.NewServer()
 		pb.RegisterOrchestratorServiceServer(s, orchServer)
 		pb.RegisterTransformServiceServer(s, transServer)
-		
+
 		// Register connector server if it was created
 		if connectorServer != nil {
 			pb.RegisterConnectorServiceServer(s, connectorServer)

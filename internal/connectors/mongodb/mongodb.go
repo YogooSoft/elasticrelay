@@ -31,9 +31,9 @@ type Connector struct {
 	database         string
 	collectionFilter []string // Collection names to watch (like table_filters)
 	uri              string
-	clusterType      ClusterType     // Detected cluster type
-	clusterInfo      *ClusterInfo    // Cluster topology information
-	useParallel      bool            // Use parallel snapshot processing
+	clusterType      ClusterType  // Detected cluster type
+	clusterInfo      *ClusterInfo // Cluster topology information
+	useParallel      bool         // Use parallel snapshot processing
 }
 
 // ConnectorOptions contains additional options for the Connector
@@ -85,7 +85,8 @@ func buildMongoURI(cfg *config.Config) string {
 	}
 
 	// Add default options for better reliability
-	uri += "?directConnection=true&serverSelectionTimeoutMS=5000"
+	// Note: authSource=admin is required when authenticating against admin database
+	uri += "?directConnection=true&serverSelectionTimeoutMS=5000&authSource=admin"
 
 	return uri
 }
@@ -304,12 +305,12 @@ func (c *Connector) buildPipeline() mongo.Pipeline {
 
 // ChangeEvent represents a MongoDB Change Stream event
 type ChangeEvent struct {
-	ID                primitive.M        `bson:"_id"`
-	OperationType     string             `bson:"operationType"`
-	FullDocument      bson.M             `bson:"fullDocument,omitempty"`
-	Ns                Namespace          `bson:"ns"`
-	DocumentKey       bson.M             `bson:"documentKey"`
-	UpdateDescription *UpdateDescription `bson:"updateDescription,omitempty"`
+	ID                primitive.M         `bson:"_id"`
+	OperationType     string              `bson:"operationType"`
+	FullDocument      bson.M              `bson:"fullDocument,omitempty"`
+	Ns                Namespace           `bson:"ns"`
+	DocumentKey       bson.M              `bson:"documentKey"`
+	UpdateDescription *UpdateDescription  `bson:"updateDescription,omitempty"`
 	ClusterTime       primitive.Timestamp `bson:"clusterTime"`
 }
 
@@ -398,10 +399,10 @@ func (h *EventHandler) HandleChange(event *ChangeEvent, resumeToken bson.Raw) er
 // Server implements the ConnectorService for MongoDB
 type Server struct {
 	pb.UnimplementedConnectorServiceServer
-	config           *config.Config
-	checkpointMutex  sync.RWMutex
-	useParallel      bool               // Use parallel snapshot processing
-	parallelConfig   *parallel.SnapshotConfig
+	config          *config.Config
+	checkpointMutex sync.RWMutex
+	useParallel     bool // Use parallel snapshot processing
+	parallelConfig  *parallel.SnapshotConfig
 }
 
 // ServerOptions contains options for the MongoDB server
@@ -523,8 +524,8 @@ func (s *Server) beginStandardSnapshot(req *pb.BeginSnapshotRequest, stream pb.C
 		// Convert BSON to JSON-friendly map
 		dataMap := convertBSONToMap(doc)
 
-		// Add metadata
-		dataMap["_collection"] = req.TableName
+		// Add metadata (use _table to be consistent with ES sink expectations)
+		dataMap["_table"] = req.TableName
 		dataMap["_database"] = conn.database
 
 		jsonData, err := json.Marshal(dataMap)

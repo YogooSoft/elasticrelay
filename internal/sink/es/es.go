@@ -84,6 +84,7 @@ func newServerFromESConfig(esCfg elasticsearch.Config, indexPrefix string) (*Ser
 }
 
 // extractTableName extracts table name from the JSON data
+// Supports both _table (MySQL/PostgreSQL) and _collection (MongoDB)
 func (s *Server) extractTableName(jsonData string) string {
 	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
@@ -91,8 +92,13 @@ func (s *Server) extractTableName(jsonData string) string {
 		return ""
 	}
 
+	// Check _table first (MySQL/PostgreSQL)
 	if tableName, ok := data["_table"].(string); ok {
 		return tableName
+	}
+	// Check _collection for MongoDB
+	if collectionName, ok := data["_collection"].(string); ok {
+		return collectionName
 	}
 	return ""
 }
@@ -115,7 +121,12 @@ func (s *Server) cleanDataForES(jsonData string) string {
 
 	// Remove metadata fields
 	delete(data, "_table")
+	delete(data, "_collection") // MongoDB collection name
 	delete(data, "_schema")
+	delete(data, "_database")
+	// Remove _id field from document body - ES uses _id as metadata field
+	// The document ID should be set via DocumentID in the bulk request, not in the body
+	delete(data, "_id")
 
 	// Re-serialize without metadata
 	cleanedData, err := json.Marshal(data)
@@ -354,8 +365,8 @@ func (s *Server) SetupIlm(ctx context.Context, req *pb.SetupIlmRequest) (*pb.Set
 
 // ensureIndexExists checks if an index exists and creates it if it doesn't
 func (s *Server) ensureIndexExists(indexName string) error {
-	// Create context with timeout for faster failure detection
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// Create context with timeout - use longer timeout for remote ES servers
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Check if index exists
@@ -412,8 +423,8 @@ func (s *Server) createDefaultIndex(indexName string) error {
 		}
 	}`
 
-	// Create context with timeout for faster failure detection
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// Create context with timeout - use longer timeout for remote ES servers
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	res, err := s.esClient.Indices.Create(

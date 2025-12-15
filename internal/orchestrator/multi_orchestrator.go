@@ -17,6 +17,7 @@ import (
 	pb "github.com/yogoosoft/elasticrelay/api/gateway/v1"
 	"github.com/yogoosoft/elasticrelay/internal/config"
 	"github.com/yogoosoft/elasticrelay/internal/connectors"
+	"github.com/yogoosoft/elasticrelay/internal/connectors/mongodb"
 	"github.com/yogoosoft/elasticrelay/internal/connectors/mysql"
 	"github.com/yogoosoft/elasticrelay/internal/connectors/postgresql"
 	"github.com/yogoosoft/elasticrelay/internal/dlq"
@@ -429,6 +430,12 @@ func (j *MultiJob) startCDC() {
 		err := connector.Start(stream, nil)
 		if err != nil {
 			log.Printf("MultiJob '%s': PostgreSQL CDC error: %v", j.ID, err)
+		}
+	case *mongodb.Connector:
+		log.Printf("MultiJob '%s': Starting MongoDB CDC stream (Change Streams)", j.ID)
+		err := connector.Start(stream, nil)
+		if err != nil {
+			log.Printf("MultiJob '%s': MongoDB CDC error: %v", j.ID, err)
 		}
 	default:
 		log.Printf("MultiJob '%s': Unsupported connector type: %T", j.ID, connector)
@@ -1081,9 +1088,12 @@ func (j *MultiJob) processSnapshotChunk(chunk *pb.SnapshotChunk, tableName strin
 			continue
 		}
 
-		// Extract primary key (assume 'id' field for now)
+		// Extract primary key - check common primary key field names
 		primaryKey := "unknown"
-		if id, exists := recordData["id"]; exists {
+		// MongoDB uses _id, MySQL/PostgreSQL typically use id
+		if id, exists := recordData["_id"]; exists {
+			primaryKey = fmt.Sprintf("%v", id)
+		} else if id, exists := recordData["id"]; exists {
 			primaryKey = fmt.Sprintf("%v", id)
 		}
 

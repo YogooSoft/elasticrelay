@@ -1,5 +1,75 @@
 # ElasticRelay 修改日志
 
+## [v1.3.1] - 2025-12-15
+
+### 🐛 问题修复
+
+#### 1. MongoDB CDC 索引路由修复
+
+**问题：** MongoDB CDC 事件被错误地路由到 `elasticrelay_mongo-default` 索引，而不是正确的集合特定索引（例如 `elasticrelay_mongo-users`）。
+
+**根本原因：** ES sink 的 `extractTableName()` 函数只检查 `_table` 字段，但 MongoDB CDC 事件使用 `_collection` 来存储集合名称。
+
+**修复：** 更新了 `internal/sink/es/es.go`：
+- `extractTableName()` 现在同时检查 `_table`（MySQL/PostgreSQL）和 `_collection`（MongoDB）字段
+- `cleanDataForES()` 现在会正确移除 `_collection`、`_database` 和 `_id` 元数据字段后再进行索引
+
+#### 2. MongoDB 认证修复
+
+**问题：** 当使用存储在 admin 数据库中的凭据时，MongoDB 连接器认证失败。
+
+**修复：** 在 `internal/connectors/mongodb/mongodb.go` 中的 MongoDB 连接 URI 中添加了 `authSource=admin` 参数。
+
+#### 3. MongoDB 快照主键提取
+
+**问题：** MongoDB 快照记录使用 `_collection` 而不是 `_table`，导致索引路由不一致。
+
+**修复：** 更新了 `beginStandardSnapshot()` 函数，使用 `_table` 字段以与 ES sink 的预期保持一致。
+
+#### 4. 主键检测增强
+
+**问题：** 使用 `_id` 作为主键的 MongoDB 文档在快照处理期间无法正确检测。
+
+**修复：** 更新了 `internal/orchestrator/multi_orchestrator.go` 中的 `processSnapshotChunk()` 函数，优先检查 `_id` 字段，然后回退到 `id`。
+
+### 🔧 改进
+
+#### 1. Elasticsearch 超时配置
+
+- 将 `ensureIndexExists()` 和 `createDefaultIndex()` 操作的超时时间从 3 秒增加到 30 秒
+- 提高了连接到高延迟远程 Elasticsearch 服务器时的可靠性
+
+#### 2. Docker Compose MongoDB 副本集
+
+- 增强了 MongoDB 容器配置，添加了 keyFile 认证用于副本集
+- 改进了 `mongodb-init` 服务，增加了更好的副本集状态检测
+- 添加了条件初始化，避免重新初始化已配置的副本集
+
+#### 3. 文档更新
+
+- 更新了 `README.md`，添加了 MongoDB 设置说明
+- 添加了 MongoDB 特定脚本参考（`reset-mongodb.sh`、`verify-mongodb.sh`）
+- 添加了 `QUICKSTART.md` 的详细设置参考
+
+#### 4. 代码格式化
+
+- 修复了 `cmd/elasticrelay/main.go` 中的缩进问题
+- 在连接器服务器创建的 switch 语句中添加了 MongoDB 连接器分支
+
+### 📁 变更文件
+
+- `internal/sink/es/es.go` - ES sink 中的 MongoDB 集合名称支持
+- `internal/connectors/mongodb/mongodb.go` - 认证源修复和元数据字段一致性
+- `internal/orchestrator/multi_orchestrator.go` - MongoDB 连接器集成和 `_id` 支持
+- `cmd/elasticrelay/main.go` - MongoDB 连接器服务器创建
+- `docker-compose.yml` - MongoDB 副本集 keyFile 配置
+- `README.md` - MongoDB 设置文档
+- `start.sh` - 默认配置更改为 MongoDB
+- `.gitignore` - 简化忽略规则
+- `config/mongodb_config.json` - 更新 ES 连接设置
+
+---
+
 ## [v1.3.0] - 2025-12-07
 
 ### 🎉 重大发布：MongoDB 连接器完整实现

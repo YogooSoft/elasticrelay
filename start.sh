@@ -4,8 +4,9 @@ cd "$(dirname "$0")"
 
 # Configuration
 BINARY="./bin/elasticrelay-darwin-arm64"
-CONFIG="./config/postgresql_config.json"
+#CONFIG="./config/postgresql_config.json"
 #CONFIG="./config/mysql_config.json"
+CONFIG="./config/mongodb_config.json"
 PORT="50051"
 LOG_DIR="./logs"
 PID_FILE="./logs/elasticrelay.pid"

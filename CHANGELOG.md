@@ -1,5 +1,75 @@
 # ElasticRelay Changelog
 
+## [v1.3.1] - 2025-12-15
+
+### 🐛 Bug Fixes
+
+#### 1. MongoDB CDC Index Routing Fix
+
+**Issue:** MongoDB CDC events were incorrectly routed to `elasticrelay_mongo-default` index instead of the proper collection-specific index (e.g., `elasticrelay_mongo-users`).
+
+**Root Cause:** The ES sink's `extractTableName()` function only checked for the `_table` field, but MongoDB CDC events used `_collection` to store the collection name.
+
+**Fix:** Updated `internal/sink/es/es.go`:
+- `extractTableName()` now checks both `_table` (MySQL/PostgreSQL) and `_collection` (MongoDB) fields
+- `cleanDataForES()` now properly removes `_collection`, `_database`, and `_id` metadata fields before indexing
+
+#### 2. MongoDB Authentication Fix
+
+**Issue:** MongoDB connector failed to authenticate when using credentials stored in admin database.
+
+**Fix:** Added `authSource=admin` to the MongoDB connection URI in `internal/connectors/mongodb/mongodb.go`.
+
+#### 3. MongoDB Snapshot Primary Key Extraction
+
+**Issue:** MongoDB snapshot records used `_collection` instead of `_table`, causing inconsistent index routing.
+
+**Fix:** Updated `beginStandardSnapshot()` to use `_table` field for consistency with ES sink expectations.
+
+#### 4. Primary Key Detection Enhancement
+
+**Issue:** MongoDB documents using `_id` as primary key were not properly detected during snapshot processing.
+
+**Fix:** Updated `processSnapshotChunk()` in `internal/orchestrator/multi_orchestrator.go` to check for `_id` field first, then fall back to `id`.
+
+### 🔧 Improvements
+
+#### 1. Elasticsearch Timeout Configuration
+
+- Increased timeout from 3 seconds to 30 seconds for `ensureIndexExists()` and `createDefaultIndex()` operations
+- Improves reliability when connecting to remote Elasticsearch servers with higher latency
+
+#### 2. Docker Compose MongoDB Replica Set
+
+- Enhanced MongoDB container configuration with keyFile authentication for replica set
+- Improved `mongodb-init` service with better replica set status detection
+- Added conditional initialization to avoid re-initializing already configured replica sets
+
+#### 3. Documentation Updates
+
+- Updated `README.md` with MongoDB setup instructions
+- Added MongoDB-specific scripts reference (`reset-mongodb.sh`, `verify-mongodb.sh`)
+- Added reference to `QUICKSTART.md` for detailed setup
+
+#### 4. Code Formatting
+
+- Fixed indentation issues in `cmd/elasticrelay/main.go`
+- Added MongoDB connector case to the switch statement for connector server creation
+
+### 📁 Files Changed
+
+- `internal/sink/es/es.go` - MongoDB collection name support in ES sink
+- `internal/connectors/mongodb/mongodb.go` - Auth source fix and metadata field consistency
+- `internal/orchestrator/multi_orchestrator.go` - MongoDB connector integration and `_id` support
+- `cmd/elasticrelay/main.go` - MongoDB connector server creation
+- `docker-compose.yml` - MongoDB replica set keyFile configuration
+- `README.md` - MongoDB setup documentation
+- `start.sh` - Default config changed to MongoDB
+- `.gitignore` - Simplified ignore rules
+- `config/mongodb_config.json` - Updated ES connection settings
+
+---
+
 ## [v1.3.0] - 2025-12-07
 
 ### 🎉 Major Release: MongoDB Connector Complete Implementation

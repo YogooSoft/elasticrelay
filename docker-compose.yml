@@ -124,7 +124,16 @@ services:
       - ./data/mongodb:/data/db
       # 初始化脚本
       - ./config/mongodb/init-mongodb.js:/docker-entrypoint-initdb.d/01-init-mongodb.js:ro
-    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+      # Replica Set keyFile (必须用于副本集认证)
+      - ./config/mongodb/keyfile:/tmp/mongodb-keyfile:ro
+    command:
+      - bash
+      - -c
+      - |
+        cp /tmp/mongodb-keyfile /tmp/keyfile
+        chmod 400 /tmp/keyfile
+        chown mongodb:mongodb /tmp/keyfile
+        exec docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all --keyFile /tmp/keyfile
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       timeout: 20s
@@ -147,13 +156,19 @@ services:
       bash -c "
         echo 'Waiting for MongoDB to be ready...';
         sleep 5;
-        mongosh --host mongodb:27017 -u $$MONGO_ROOT_USER -p $$MONGO_ROOT_PASSWORD --authenticationDatabase admin --eval '
-          rs.status().ok || rs.initiate({
-            _id: \"rs0\",
-            members: [{ _id: 0, host: \"mongodb:27017\" }]
-          });
-        ';
-        echo 'MongoDB Replica Set initialized';
+        echo 'Checking replica set status...';
+        if mongosh --host mongodb:27017 -u $$MONGO_ROOT_USER -p $$MONGO_ROOT_PASSWORD --authenticationDatabase admin --eval 'rs.status()' 2>&1 | grep -q 'no replset config'; then
+          echo 'Initializing replica set...';
+          mongosh --host mongodb:27017 -u $$MONGO_ROOT_USER -p $$MONGO_ROOT_PASSWORD --authenticationDatabase admin --eval '
+            rs.initiate({
+              _id: \"rs0\",
+              members: [{ _id: 0, host: \"mongodb:27017\" }]
+            });
+          ';
+          echo 'MongoDB Replica Set initialized successfully!';
+        else
+          echo 'Replica set already initialized.';
+        fi
       "
     networks:
       - elasticrelay-network
