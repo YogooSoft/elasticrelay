@@ -309,7 +309,7 @@ limitations under the License.
 
 ## 📞 支持
 - 🐦 X (Twitter): [@ElasticRelay](https://x.com/ElasticRelay)
-- 🌐 官方网站: [www.elasticrelay.com](https://www.elasticrelay.com)
+- 🌐 官方网站: [www.elasticrelay.com](http://www.elasticrelay.com)
 - 📧 邮箱: support@yogoo.net
 - 💬 社区: [GitHub Discussions](https://github.com/yogoosoft/ElasticRelay/discussions)
 - 🐛 问题报告: [GitHub Issues](https://github.com/yogoosoft/ElasticRelay/issues)
