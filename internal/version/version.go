@@ -110,7 +110,7 @@ func DisplayLogo() {
 
 	// Display copyright information
 	fmt.Printf("%s%s%s\n", ColorGreen, strings.Repeat("-", 70), ColorReset)
-	fmt.Printf("%s%s© 2024 Shanghai Yogoo Software Co., Ltd. - All Rights Reserved%s%s\n",
+	fmt.Printf("%s%s© 2024-2026 Yogoo Software Co., Ltd. - All Rights Reserved%s%s\n",
 		ColorGreen, ColorBold, ColorReset, ColorGreen)
 	fmt.Printf("%s%s%s\n\n", ColorGreen, strings.Repeat("-", 70), ColorReset)
 }

@@ -487,7 +487,7 @@ Dieses Projekt hat seine Kern Multi-Source CDC Plattform (Phase 2) abgeschlossen
 ElasticRelay ist unter der [Apache License 2.0](LICENSE) lizenziert.
 
 ```
-Copyright 2024 上海悦高软件股份有限公司 (Shanghai Yogoo Software Co., Ltd.)
+Copyright 2024 上海悦高软件股份有限公司 (Yogoo Software Co., Ltd.)
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
