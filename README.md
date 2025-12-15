@@ -1,24 +1,53 @@
 # ElasticRelay - Multi-Source CDC Gateway to Elasticsearch
 
+![ElasticRelay Screenshot](releases/download/asset/screenshot_02.png)
+
+<p align="center">
+  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.3.1-blue.svg" alt="Version"></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/go-1.25.2+-00ADD8.svg" alt="Go Version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License"></a>
+</p>
+<p align="center">
+  <a href="releases/download/asset/README.de.md">Deutsch</a> |
+  <a href="releases/download/asset/README.fr.md">Français</a> |
+  <a href="releases/download/asset/README.ja.md">日本語</a> |
+  <a href="releases/download/asset/README.ru.md">Русский</a> |
+  <a href="releases/download/asset/README.zh-CN.md">中文</a>
+</p>
+
 ## Vision
 
 ElasticRelay is a seamless, heterogeneous data synchronizer designed to provide real-time Change Data Capture (CDC) from major OLTP databases (MySQL, PostgreSQL, MongoDB) to Elasticsearch. It aims to be more user-friendly and reliable than existing solutions like Logstash or Flink.
 
+## 🎉 v1.3.1 Highlights - Multi-Source CDC Platform
+
+**Three major database sources fully supported:**
+
+| Source | Status | Features |
+|--------|--------|----------|
+| **MySQL** | ✅ Complete | Binlog CDC + Initial Sync + Parallel Snapshots |
+| **PostgreSQL** | ✅ Complete | Logical Replication + WAL Parsing + LSN Management |
+| **MongoDB** | ✅ Complete | Change Streams + Sharded Clusters + Resume Tokens |
+
 ## Key Features
 
-- **Zero-Code Configuration**: A wizard-style GUI for setting up connections, selecting tables, governing fields, and mapping to Elasticsearch.
-- **Multi-Table Dynamic Indexing**: Automatically creates separate Elasticsearch indices for each source table with configurable naming patterns (e.g., `elasticrelay-users`, `elasticrelay-orders`).
-- **Built-in Governance**: Handles data structuring, anonymization, type conversion, normalization, and enrichment.
-- **Reliability by Default**: Utilizes transaction log-level CDC, precise checkpointing for resuming, and idempotent writes to ensure data integrity.
+- **Multi-Source CDC**: Full support for MySQL, PostgreSQL, and MongoDB with real-time change capture
+- **Zero-Code Configuration**: JSON-based configuration with wizard-style GUI (in development)
+- **Multi-Table Dynamic Indexing**: Automatically creates separate Elasticsearch indices for each source table with configurable naming patterns (e.g., `elasticrelay-users`, `elasticrelay-orders`)
+- **Built-in Governance**: Handles data structuring, anonymization, type conversion, normalization, and enrichment
+- **Reliability by Default**: Utilizes transaction log-level CDC, precise checkpointing for resuming, and idempotent writes to ensure data integrity
+- **Dead Letter Queue (DLQ)**: Comprehensive failure handling with exponential backoff retry and persistent storage
+- **Parallel Processing**: Advanced parallel snapshot processing with chunking strategies for large tables
 
 ## Technology Stack
 
-- **Data Plane (Go)**: The core data synchronization logic is built in Go (1.25.2+) for high concurrency, low memory footprint, and simple deployment. Uses advanced MySQL binlog parsing and Elasticsearch bulk APIs.
+- **Data Plane (Go)**: The core data synchronization logic is built in Go (1.25.2+) for high concurrency, low memory footprint, and simple deployment.
 - **Control Plane & GUI (TypeScript/Next.js)**: A rich, interactive UI for configuration and monitoring (in development).
 - **APIs (gRPC)**: Internal communication between components is handled via gRPC for high performance with complete service implementations.
 - **Database Support**: 
   - **MySQL CDC**: Advanced binlog parsing with real-time synchronization (go-mysql library)
   - **PostgreSQL CDC**: Logical replication with WAL parsing, replication slots, and publications
+  - **MongoDB CDC**: Change Streams with replica set and sharded cluster support (mongo-driver)
 - **Elasticsearch Integration**: Official Elasticsearch Go client (v8) with bulk indexing support
 - **Configuration**: JSON-based configuration with automatic format detection and migration
 - **Reliability**: Comprehensive error handling, DLQ system, and checkpoint management
@@ -102,6 +131,7 @@ After completing these steps, ElasticRelay will start monitoring database change
 - Elasticsearch (7.x or 8.x)
 - **MySQL** (5.7+ or 8.x) with binlog enabled
 - **PostgreSQL** (10+ recommended, 9.4+ minimum) with logical replication enabled
+- **MongoDB** (4.0+) with replica set or sharded cluster configuration
 
 ### Installation
 
@@ -219,6 +249,20 @@ ElasticRelay supports both legacy single-config and modern multi-config formats 
         "max_connections": 10,
         "parallel_snapshots": true
       }
+    },
+    {
+      "id": "mongodb-main",
+      "type": "mongodb",
+      "host": "localhost",
+      "port": 27017,
+      "user": "elasticrelay_user",
+      "password": "password",
+      "database": "elasticrelay",
+      "table_filters": ["users", "orders", "products"],
+      "options": {
+        "auth_source": "admin",
+        "replica_set": "rs0"
+      }
     }
   ],
   "sinks": [
@@ -320,6 +364,65 @@ ElasticRelay provides comprehensive PostgreSQL CDC capabilities with advanced fe
 }
 ```
 
+### MongoDB Support
+
+ElasticRelay provides complete MongoDB CDC capabilities using Change Streams:
+
+#### Core MongoDB Features
+- **Change Streams**: Real-time CDC using MongoDB's native Change Streams API
+- **Cluster Support**: Automatic detection and support for replica sets and sharded clusters
+- **Resume Tokens**: Persistent resume token management for checkpoint/resume functionality
+- **Operation Mapping**: Full support for INSERT, UPDATE, REPLACE, and DELETE operations
+
+#### Advanced MongoDB Capabilities
+- **Sharded Cluster Support**: 
+  - Multi-shard monitoring via mongos
+  - Migration awareness for consistency during chunk migrations
+  - Chunk distribution monitoring
+- **Type Conversion**: Complete BSON to JSON-friendly type conversion:
+  - ObjectID → string (hex format)
+  - DateTime → RFC3339 timestamp
+  - Decimal128 → string (precision preserved)
+  - Binary → base64 encoded
+  - Nested documents with configurable flattening depth
+- **Parallel Snapshots**: 
+  - ObjectID-based chunking for standard collections
+  - Numeric ID-based chunking for integer primary keys
+  - Skip/Limit fallback for complex ID types
+
+#### MongoDB Configuration Options
+```json
+{
+  "type": "mongodb",
+  "host": "localhost",
+  "port": 27017,
+  "user": "elasticrelay_user",
+  "password": "password",
+  "database": "your_database",
+  "options": {
+    "auth_source": "admin",
+    "replica_set": "rs0",
+    "read_preference": "primaryPreferred",
+    "batch_size": 1000,
+    "flatten_depth": 3
+  }
+}
+```
+
+#### MongoDB Setup Requirements
+```sh
+# MongoDB must run in replica set mode for Change Streams
+# Use the provided setup script:
+./scripts/reset-mongodb.sh
+
+# Or with Docker Compose:
+docker-compose up -d mongodb
+docker-compose up mongodb-init
+
+# Verify replica set is configured:
+./scripts/verify-mongodb.sh
+```
+
 ### Parallel Processing
 
 Advanced parallel snapshot processing capabilities:
@@ -332,12 +435,15 @@ Advanced parallel snapshot processing capabilities:
 
 ## Current Status
 
-This project is currently in active development (MVP Phase ~95%). The following has been completed:
+**Current Version**: v1.3.1 | **Phase**: Phase 2 Complete ✅, entering Phase 3
 
-### ✅ Completed Features
-- **Core Data Pipeline**: 
+This project has completed its core multi-source CDC platform (Phase 2) and is preparing for enterprise-grade enhancements.
+
+### ✅ Completed Features (Phase 2 - v1.3.1)
+- **Multi-Source CDC Pipeline**: 
   - **MySQL CDC**: Full implementation with binlog-based real-time synchronization
   - **PostgreSQL CDC**: Complete logical replication with WAL parsing, replication slots, and publications
+  - **MongoDB CDC**: Full Change Streams implementation with replica set and sharded cluster support
 - **Multi-Table Dynamic Indexing**: Automatic per-table Elasticsearch index creation and management with configurable naming
 - **gRPC Architecture**: Complete service definitions and implementations (Connector, Orchestrator, Sink, Transform, Health)
 - **Advanced Configuration Management**: 
@@ -345,8 +451,8 @@ This project is currently in active development (MVP Phase ~95%). The following 
   - Configuration synchronization and hot-reload capabilities
   - Automatic format detection and migration tools
 - **Elasticsearch Integration**: High-performance bulk writing with automatic index management and data cleaning
-- **Checkpoint/Resume**: Persistent binlog position tracking for fault tolerance with automatic recovery
-- **Data Transformation**: Complete pipeline for data processing and governance
+- **Checkpoint/Resume**: Persistent position tracking for fault tolerance with automatic recovery (binlog, LSN, resume tokens)
+- **Data Transformation**: Complete pipeline for data processing and governance (pass-through, full engine in Phase 3)
 - **Dead Letter Queue (DLQ)**: 
   - Comprehensive DLQ system with exponential backoff retry (configurable max retries)
   - Persistent storage with deduplication and status tracking
@@ -356,24 +462,22 @@ This project is currently in active development (MVP Phase ~95%). The following 
   - Advanced parallel snapshot processing with chunking strategies
   - Configurable worker pools and adaptive scheduling
   - Progress tracking and statistics collection
-  - Support for large table optimization
+  - Support for large table optimization (MySQL, PostgreSQL, MongoDB)
 - **Version Management**: Complete version injection system with build-time metadata
 - **Robust Error Handling**: Comprehensive error handling with fallback mechanisms
+- **Log Level Control**: Runtime-configurable logging with centralized management
 
-### 🚧 In Progress
+### 🚧 In Progress (Phase 3 - v1.0-beta)
+- **Transform Engine**: Full data transformation implementation (field mapping, type conversion, expressions, masking)
+- **Prometheus Metrics**: Complete observability with metrics export
+- **HTTP REST API**: grpc-gateway integration with OpenAPI documentation
+- **Health Check Enhancement**: Kubernetes-ready readiness/liveness probes
+
+### 📋 Upcoming (Phase 4+)
 - **Frontend Development**: Control Plane GUI (TypeScript/Next.js)
-- **Enhanced Monitoring**: Metrics collection and observability dashboards
-- **DLQ Management API**: gRPC/REST endpoints for DLQ inspection and manual operations
-
-### 📋 Upcoming
-- **MongoDB Support**: MongoDB change streams connector
-- **Advanced GUI Features**: Drag-and-drop field mapping and transformation wizards
-- **DLQ Web UI**: Visual interface for managing failed events
+- **High Availability**: Multi-replica deployment with automatic failover
+- **Security Enhancement**: mTLS, RBAC, and audit logging
 - **Advanced Governance**: Rich data transformation rules and field-level governance
-- **Enhanced PostgreSQL Features**: 
-  - Custom type extensions support
-  - Advanced geometric type handling
-  - Cross-database transaction coordination
 
 ---
 
