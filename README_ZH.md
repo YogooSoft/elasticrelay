@@ -308,8 +308,8 @@ limitations under the License.
 我们欢迎贡献！请查看我们的 [贡献指南](CONTRIBUTING.md) 了解详情。
 
 ## 📞 支持
-
-- 🌐 官方网站: [www.yogoo.net](https://www.yogoo.net)
+- 🐦 X (Twitter): [@ElasticRelay](https://x.com/ElasticRelay)
+- 🌐 官方网站: [www.elasticrelay.com](https://www.elasticrelay.com)
 - 📧 邮箱: support@yogoo.net
 - 💬 社区: [GitHub Discussions](https://github.com/yogoosoft/ElasticRelay/discussions)
 - 🐛 问题报告: [GitHub Issues](https://github.com/yogoosoft/ElasticRelay/issues)

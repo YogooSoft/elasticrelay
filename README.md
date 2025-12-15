@@ -403,7 +403,8 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 ## 📞 Support
 
-- 🌐 Official Website: [www.yogoo.net](https://www.yogoo.net)
+- 🐦 X (Twitter): [@ElasticRelay](https://x.com/ElasticRelay)
+- 🌐 Official Website: [www.elasticrelay.com](https://www.elasticrelay.com)
 - 📧 Email: support@yogoo.net
 - 💬 Community: [GitHub Discussions](https://github.com/yogoosoft/ElasticRelay/discussions)
 - 🐛 Bug Reports: [GitHub Issues](https://github.com/yogoosoft/ElasticRelay/issues)
