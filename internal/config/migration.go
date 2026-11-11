@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -31,22 +30,7 @@ func (m *MigrationService) DetectConfigFormat() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read config file: %w", err)
 	}
-
-	// Try to parse as version info
-	var version ConfigVersion
-	if err := json.Unmarshal(data, &version); err == nil && version.Version != "" {
-		return version.Version, nil
-	}
-
-	// Check for legacy format fields
-	var legacyCheck struct {
-		DBHost string `json:"db_host"`
-	}
-	if err := json.Unmarshal(data, &legacyCheck); err == nil && legacyCheck.DBHost != "" {
-		return "1.0", nil
-	}
-
-	return "unknown", fmt.Errorf("unknown configuration format")
+	return DetectFormatFromBytes(data)
 }
 
 // MigrateToMultiConfig migrates legacy config to new multi-record format

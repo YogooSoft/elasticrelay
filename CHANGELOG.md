@@ -1,5 +1,135 @@
 # ElasticRelay Changelog
 
+## [v1.5.0] - 2026-11-11
+
+### ✨ New Feature: Nacos Config Center and Configuration Hot Reload
+
+ElasticRelay can now read its configuration from the Nacos config center and apply changes published in Nacos automatically, without restarting the process or calling a refresh endpoint. The configuration source is controlled by a switch that **defaults to the local file, so existing deployments are unaffected**. Hot reload applies to the multi-source configuration formats 2.0 / 3.0; the legacy 1.0 startup path is unchanged.
+
+#### 1. Configuration Source Switch (`internal/config/options.go`, `cmd/elasticrelay/main.go`)
+
+- Added `--config-source=file|nacos` (environment variable `ELASTICRELAY_CONFIG_SOURCE`), default `file`
+- Every new flag has a matching environment variable. Precedence: command-line flag > environment variable > default
+- The effective configuration source is logged at startup, without secrets
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--config-source` | `ELASTICRELAY_CONFIG_SOURCE` | `file` | Configuration source |
+| `--config-watch` | `ELASTICRELAY_CONFIG_WATCH` | `false` | Watch the config file and hot reload in file mode |
+| `--config-debounce` | `ELASTICRELAY_CONFIG_DEBOUNCE` | `2s` | Change debounce window |
+| `--config-apply-mode` | `ELASTICRELAY_CONFIG_APPLY_MODE` | `auto` | `dry_run` only logs the diff without applying it |
+| `--config-expand-env` | `ELASTICRELAY_CONFIG_EXPAND_ENV` | `false` in file mode, `true` in nacos mode | Expand `${VAR}` placeholders in passwords |
+| `--nacos-server-addr` | `NACOS_SERVER_ADDR` | — | Comma-separated addresses, optional `http(s)://` prefix, port defaults to 8848 |
+| `--nacos-namespace` | `NACOS_NAMESPACE` | empty (`public`) | Namespace **ID** |
+| `--nacos-group` | `NACOS_GROUP` | `ELASTICRELAY` | Group |
+| `--nacos-data-id` | `NACOS_DATA_ID` | `elasticrelay.json` | Main configuration Data ID |
+| `--nacos-transform-data-id` | `NACOS_TRANSFORM_DATA_ID` | empty | Transform rules Data ID; empty disables it |
+| `--nacos-username` / `--nacos-password` | `NACOS_USERNAME` / `NACOS_PASSWORD` | — | Username/password authentication |
+| `--nacos-access-key` / `--nacos-secret-key` | `NACOS_ACCESS_KEY` / `NACOS_SECRET_KEY` | — | AK/SK authentication |
+| `--nacos-startup-policy` | `NACOS_STARTUP_POLICY` | `fail_fast` | Exit when Nacos is unavailable, or `use_cache` to start from the local snapshot |
+
+- Passing `--nacos-password` on the command line logs a warning; use the `NACOS_PASSWORD` environment variable instead
+
+#### 2. Configuration Sources and Hot Reload Manager (`internal/config/source*.go`, `internal/config/manager.go`, `internal/config/parse.go`, `internal/config/diff.go`)
+
+- **`NacosSource`**: built on `nacos-sdk-go/v2` v2.3.6; listens to the main and transform configurations; supports TLS, multiple servers and local snapshots
+- **`FileSource`**: watches the config file's directory with fsnotify; handles editors that write a temp file and rename it, and Kubernetes ConfigMap symlink swaps
+- **`ConfigManager`**: debounce → dedupe by content hash → parse → expand `${VAR}` → validate → diff → apply serially. Bursts of changes only apply the latest one
+- **Invalid configuration protection**: malformed JSON, empty or deleted content, validation failures (duplicate IDs, references to missing sources or sinks, invalid ports, unsupported types) and undefined environment variables reject the new configuration and keep the current one
+- 1.0-format content is converted to the multi-source format in memory with a warning
+- The main and transform configurations are processed independently
+
+#### 3. Diff-Based Configuration Apply (`internal/orchestrator/apply.go`)
+
+Added `MultiOrchestrator.ApplyConfiguration`, which compares the old and new configuration by ID and rebuilds only what changed:
+
+| Change | Effect |
+|---|---|
+| Data source or sink added/removed/changed | Rebuild it and restart the jobs that depend on it |
+| Job added/removed/changed/enabled/disabled | Rebuild only that job |
+| Only `name` / `description` changed | Update metadata without restarting |
+| `global.log_level`, `global.dlq_config` | Applied immediately |
+| Transform rules | Applied immediately without restarting jobs |
+| `global.grpc_port`, `global.metrics_port` | Warning logged; requires a process restart |
+
+- **Stop before start**: affected jobs are stopped first, then sources and sinks are rebuilt, then jobs are started, so a MySQL `server_id` or PostgreSQL replication slot is never held by the old and new job at the same time
+- **Graceful job stop**: after reading stops, buffered events are written to the sink and the checkpoint is force-committed before resources are released (30 s timeout by default)
+- **Resume from checkpoint**: when a data source keeps the same type, host, port and database, MySQL / MongoDB jobs resume from the old job's latest position; PostgreSQL keeps using its replication slot
+- A job that fails to start does not affect other jobs and is retried on the next configuration change or manual reload
+- Jobs with `force_initial_sync: true` run a full resync when restarted by a configuration change; a warning is logged
+- The in-process SinkService and ConnectorService are now hot-swappable (`cmd/elasticrelay/services.go`) and are rebuilt when their source or sink changes
+
+#### 4. ConfigService gRPC (`internal/config/grpc_service.go`)
+
+- Registered `gateway.v1.ConfigService`
+- `GetConfig`: returns the first data source and first Elasticsearch sink of the active configuration, with passwords masked
+- `ReloadConfig`: fetches and applies the configuration immediately, bypassing content dedupe; useful for retrying failed objects
+- `UpdateConfig`: returns `FailedPrecondition` in Nacos mode, where configuration is read-only
+
+#### 5. Configuration Publish Script (`scripts/nacos_publish.sh`)
+
+- Publishes a local JSON file to a Nacos namespace, group and Data ID through the Nacos OpenAPI, with username/password login
+
+### 🐛 Bug Fixes
+
+These issues would be amplified by hot reload and are fixed in this release:
+
+#### 1. MySQL CDC Did Not Close the Binlog Connection (`internal/connectors/mysql/mysql.go`)
+
+- **Issue**: the `BinlogSyncer` was never closed, so the connection outlived the job and a restarted job could not reuse the same `server_id`
+- **Fix**: `defer syncer.Close()` after creation
+
+#### 2. Duplicated, Unstoppable DLQ Workers (`internal/orchestrator/multi_orchestrator.go`)
+
+- **Issue**: startup and every call to `updateDLQConfiguration` started another set of DLQ retry, stats and cleanup goroutines that could never be stopped
+- **Fix**: workers are bound to a cancellable context, and the previous set is stopped when the DLQ is rebuilt
+
+#### 3. Checkpoint Commits Hard-Coded `localhost:50051` (`internal/orchestrator/multi_orchestrator.go`)
+
+- **Issue**: in multi-source mode, checkpoint commits and serial snapshots always dialed `localhost:50051` and failed when `--port` was not the default
+- **Fix**: use the actual gRPC service address
+
+#### 4. Multi-Source Mode Did Not Commit Checkpoints on Exit
+
+- **Issue**: on `SIGINT` / `SIGTERM` the process exited immediately, possibly losing buffered events and the latest checkpoint
+- **Fix**: all jobs are stopped gracefully before the gRPC server shuts down (forced after 10 s)
+
+### ⚠️ Behavior Changes
+
+- In multi-source mode, Ctrl+C / `SIGTERM` now flushes buffers and commits checkpoints before exiting, so shutdown takes slightly longer
+- In file mode, startup validation failures are still only logged as warnings (as before); in Nacos mode at startup and during hot reload, validation failures reject the configuration
+
+### 📦 Dependencies
+
+- Added `github.com/nacos-group/nacos-sdk-go/v2` v2.3.6
+- `github.com/jackc/pglogrepl` moved from an indirect to a direct dependency
+
+### 🚀 Usage
+
+```bash
+export NACOS_PASSWORD=nacos
+./elasticrelay --config-source=nacos \
+  --nacos-server-addr=http://172.168.0.141/ \
+  --nacos-namespace=esrelay \
+  --nacos-group=test \
+  --nacos-username=nacos \
+  --nacos-data-id=mysql_config.json \
+  --nacos-transform-data-id=mysql_transform.json
+```
+
+- Nacos 2.x clients also connect to the gRPC port (HTTP port + 1000, 9848 by default); allow it in network policies
+- See `elasticrelay.env.example` for environment variable examples
+
+### ✅ Verification
+
+- New unit tests in `internal/config` (flag parsing, config parsing and validation, diffing, Nacos source, ConfigManager, file watching) and `internal/orchestrator/apply_test.go` (diff-based apply, graceful job stop); `go test -race` passes
+- Without the new flags, startup behavior is unchanged and configuration changes are not watched
+- File mode with `--config-watch`: valid changes are applied; a configuration referencing a missing sink is rejected and the current one kept; changing a source address restarts only the dependent jobs
+- Tested against Nacos 2.5.5 (`172.168.0.141:8848`, namespace `esrelay`, group `test`): `mysql_config.json` and `mysql_transform.json` load and validate; a published change is pushed in about 4 s
+- With Nacos unavailable, the `fail_fast` policy exits after about 3 s with a clear error
+
+---
+
 ## [v1.4.6] - 2026-05-12
 
 ### 🐛 Bug Fixes

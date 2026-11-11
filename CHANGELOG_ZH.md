@@ -1,5 +1,135 @@
 # ElasticRelay 修改日志
 
+## [v1.5.0] - 2026-11-11
+
+### ✨ 新功能：Nacos 配置中心与配置热更新
+
+此版本支持从 Nacos 配置中心读取配置，并在 Nacos 中修改配置后自动生效，无需重启进程或调用刷新接口。配置来源由开关控制，**默认仍为本地文件，存量部署不受影响**。仅适用于多源配置格式 2.0 / 3.0，1.0 旧格式的启动流程保持不变。
+
+#### 1. 配置来源开关 (`internal/config/options.go`, `cmd/elasticrelay/main.go`)
+
+- 新增 `--config-source=file|nacos`（环境变量 `ELASTICRELAY_CONFIG_SOURCE`），默认 `file`
+- 所有新参数都支持同名环境变量，优先级为：命令行参数 > 环境变量 > 默认值
+- 启动日志打印最终生效的配置来源，不包含密码
+
+| 参数 | 环境变量 | 默认值 | 说明 |
+|---|---|---|---|
+| `--config-source` | `ELASTICRELAY_CONFIG_SOURCE` | `file` | 配置来源 |
+| `--config-watch` | `ELASTICRELAY_CONFIG_WATCH` | `false` | file 模式下监听文件变更并热更新 |
+| `--config-debounce` | `ELASTICRELAY_CONFIG_DEBOUNCE` | `2s` | 变更防抖窗口 |
+| `--config-apply-mode` | `ELASTICRELAY_CONFIG_APPLY_MODE` | `auto` | `dry_run` 时只打印配置差异，不应用 |
+| `--config-expand-env` | `ELASTICRELAY_CONFIG_EXPAND_ENV` | file 模式 `false`，nacos 模式 `true` | 替换密码中的 `${VAR}` 占位符 |
+| `--nacos-server-addr` | `NACOS_SERVER_ADDR` | — | 支持逗号分隔多个地址、`http(s)://` 前缀，未写端口时默认 8848 |
+| `--nacos-namespace` | `NACOS_NAMESPACE` | 空（即 `public`） | 命名空间 **ID** |
+| `--nacos-group` | `NACOS_GROUP` | `ELASTICRELAY` | 分组 |
+| `--nacos-data-id` | `NACOS_DATA_ID` | `elasticrelay.json` | 主配置 Data ID |
+| `--nacos-transform-data-id` | `NACOS_TRANSFORM_DATA_ID` | 空 | Transform 规则 Data ID，留空表示不使用 |
+| `--nacos-username` / `--nacos-password` | `NACOS_USERNAME` / `NACOS_PASSWORD` | — | 用户名密码鉴权 |
+| `--nacos-access-key` / `--nacos-secret-key` | `NACOS_ACCESS_KEY` / `NACOS_SECRET_KEY` | — | AK/SK 鉴权 |
+| `--nacos-startup-policy` | `NACOS_STARTUP_POLICY` | `fail_fast` | Nacos 不可用时退出，或用 `use_cache` 读取本地快照启动 |
+
+- 通过命令行传入 `--nacos-password` 时打印警告，建议改用环境变量 `NACOS_PASSWORD`
+
+#### 2. 配置源与热更新管理 (`internal/config/source*.go`, `internal/config/manager.go`, `internal/config/parse.go`, `internal/config/diff.go`)
+
+- **`NacosSource`**：基于 `nacos-sdk-go/v2` v2.3.6，监听主配置和 Transform 配置，支持 TLS、多地址和本地快照
+- **`FileSource`**：基于 fsnotify 监听配置文件所在目录，兼容编辑器"写临时文件再重命名"和 Kubernetes ConfigMap 的符号链接切换
+- **`ConfigManager`**：变更防抖 → 按内容哈希去重 → 解析 → 替换 `${VAR}` → 校验 → 计算差异 → 串行应用。连续多次变更只应用最新一份
+- **非法配置保护**：JSON 错误、内容为空、配置被删除、校验失败（ID 重复、引用不存在的数据源或 Sink、端口非法、不支持的类型），或引用了未定义的环境变量时，拒绝新配置并保留当前配置
+- 1.0 格式内容在内存中自动转换为多源格式并打印警告
+- 主配置与 Transform 配置独立处理，互不影响
+
+#### 3. 按差异增量应用配置 (`internal/orchestrator/apply.go`)
+
+新增 `MultiOrchestrator.ApplyConfiguration`，按 ID 对比新旧配置，只重建发生变化的对象：
+
+| 修改内容 | 生效方式 |
+|---|---|
+| 数据源、Sink 的增删改 | 重建该对象，并重启依赖它的作业 |
+| 作业的增删改、启停 | 只重建该作业 |
+| 只修改 `name` / `description` | 只更新元数据，不重启 |
+| `global.log_level`、`global.dlq_config` | 立即生效 |
+| Transform 规则 | 立即生效，不重启作业 |
+| `global.grpc_port`、`global.metrics_port` | 打印警告，需要重启进程 |
+
+- **先停后启**：先停止受影响的作业，再重建数据源和 Sink，最后启动作业，避免同一个 MySQL `server_id` 或 PostgreSQL 复制槽被新旧作业同时占用
+- **优雅停止作业**：停止读取后，把缓冲中的事件写入 Sink 并强制提交位点，再释放资源（默认超时 30 秒）
+- **断点续传**：数据源的类型、地址、端口、库名不变时，MySQL / MongoDB 作业从旧作业的最新位点续传；PostgreSQL 继续使用原复制槽
+- 单个作业启动失败不影响其他作业，失败的对象在下次配置变更或手动重载时重试
+- 作业配置了 `force_initial_sync: true` 时，因配置变更重启会重新全量同步，日志中会提示
+- 进程内的 SinkService 和 ConnectorService 改为可热替换（`cmd/elasticrelay/services.go`），对应数据源或 Sink 变化时自动重建
+
+#### 4. ConfigService gRPC (`internal/config/grpc_service.go`)
+
+- 注册 `gateway.v1.ConfigService`
+- `GetConfig`：返回当前生效配置中的第一个数据源和第一个 Elasticsearch Sink，密码脱敏
+- `ReloadConfig`：立即从配置源重新拉取并应用，跳过内容去重，可用于重试失败的对象
+- `UpdateConfig`：Nacos 模式下配置只读，返回 `FailedPrecondition`
+
+#### 5. 配置发布脚本 (`scripts/nacos_publish.sh`)
+
+- 通过 Nacos OpenAPI 将本地 JSON 文件发布到指定命名空间、分组和 Data ID，支持用户名密码登录
+
+### 🐛 问题修复
+
+以下问题在热更新时会被放大，本版本一并修复：
+
+#### 1. MySQL CDC 退出时未关闭 binlog 连接 (`internal/connectors/mysql/mysql.go`)
+
+- **问题：** `BinlogSyncer` 创建后从未关闭，作业停止后连接仍然存在，重启的作业无法复用同一个 `server_id`
+- **修复：** 创建后 `defer syncer.Close()`
+
+#### 2. DLQ 重试协程重复启动且无法停止 (`internal/orchestrator/multi_orchestrator.go`)
+
+- **问题：** 启动时和每次调用 `updateDLQConfiguration` 都会新增一组 DLQ 重试、统计和清理协程，旧的协程无法停止
+- **修复：** 协程绑定可取消的 context，重建 DLQ 时先停止旧协程
+
+#### 3. 提交位点写死 `localhost:50051` (`internal/orchestrator/multi_orchestrator.go`)
+
+- **问题：** 多源模式下提交位点和串行快照固定连接 `localhost:50051`，`--port` 不是默认值时失败
+- **修复：** 使用实际的 gRPC 服务地址
+
+#### 4. 多源模式退出时不提交位点
+
+- **问题：** 收到 `SIGINT` / `SIGTERM` 后直接退出，缓冲中的事件和最新位点可能丢失
+- **修复：** 退出时先优雅停止所有作业，再关闭 gRPC 服务（10 秒后强制关闭）
+
+### ⚠️ 行为变化
+
+- 多源模式下按 Ctrl+C 或收到 `SIGTERM` 后，会先写完缓冲并提交位点再退出，退出时间比之前略长
+- 多源模式下，file 模式启动时的配置校验失败仍只打印警告（与之前一致）；Nacos 模式启动和运行期热更新时校验失败会拒绝配置
+
+### 📦 依赖
+
+- 新增 `github.com/nacos-group/nacos-sdk-go/v2` v2.3.6
+- `github.com/jackc/pglogrepl` 由间接依赖改为直接依赖
+
+### 🚀 使用方式
+
+```bash
+export NACOS_PASSWORD=nacos
+./elasticrelay --config-source=nacos \
+  --nacos-server-addr=http://172.168.0.141/ \
+  --nacos-namespace=esrelay \
+  --nacos-group=test \
+  --nacos-username=nacos \
+  --nacos-data-id=mysql_config.json \
+  --nacos-transform-data-id=mysql_transform.json
+```
+
+- Nacos 2.x 客户端还会连接 gRPC 端口（HTTP 端口 + 1000，默认 9848），网络策略需要同时放通
+- 环境变量示例见 `elasticrelay.env.example`
+
+### ✅ 验证
+
+- 新增单元测试：`internal/config`（参数解析、配置解析与校验、差异计算、Nacos 配置源、ConfigManager、文件监听）和 `internal/orchestrator/apply_test.go`（增量应用、作业优雅停止），`go test -race` 通过
+- 不加新参数时，启动行为与之前一致，不监听配置变化
+- file 模式开启 `--config-watch`：合法修改自动生效；引用不存在 Sink 的配置被拒绝并保留原配置；修改数据源地址只重启依赖的作业
+- 与 Nacos 2.5.5（`172.168.0.141:8848`，命名空间 `esrelay`，分组 `test`）联调：成功读取并校验 `mysql_config.json` 与 `mysql_transform.json`；发布新配置后约 4 秒收到推送
+- Nacos 不可用时，`fail_fast` 策略下约 3 秒后退出并给出明确错误
+
+---
+
 ## [v1.4.6] - 2026-05-12
 
 ### 🐛 问题修复

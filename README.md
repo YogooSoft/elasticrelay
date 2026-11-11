@@ -3,7 +3,7 @@
 ![ElasticRelay Screenshot](releases/download/asset/screenshot_02.png)
 
 <p align="center">
-  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.4.4-blue.svg" alt="Version"></a>
+  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.5.0-blue.svg" alt="Version"></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/go-1.25.2+-00ADD8.svg" alt="Go Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License"></a>
 </p>
@@ -19,22 +19,24 @@
 
 ElasticRelay is a seamless, heterogeneous data synchronizer designed to provide real-time Change Data Capture (CDC) from major OLTP databases (MySQL, PostgreSQL, MongoDB) to Elasticsearch. It aims to be more user-friendly and reliable than existing solutions like Logstash or Flink.
 
-## 🎉 v1.4.4 Highlights - Production-Ready CDC Platform with Transform Engine
+## 🎉 v1.5.0 Highlights - Nacos Config Center & Configuration Hot Reload
 
-**Three major database sources + enterprise data transformation:**
+**Three major database sources + enterprise data transformation + centralized configuration:**
 
-| Source | Status | Features |
+| Component | Status | Features |
 |--------|--------|----------|
 | **MySQL** | ✅ Complete | Binlog CDC + Initial Sync + Parallel Snapshots |
 | **PostgreSQL** | ✅ Production-Hardened | Logical Replication + WAL Parsing + Stable Snapshot-to-CDC Handoff |
 | **MongoDB** | ✅ Complete | Change Streams + Sharded Clusters + Resume Tokens |
 | **Transform Engine** | ✅ Complete | Field Mapping + Data Masking + Type Conversion + Expression Engine |
+| **Config Center** | 🆕 New | Nacos or Local File + Automatic Hot Reload + Diff-Based Apply |
 
 ## Key Features
 
 - **Multi-Source CDC**: Full support for MySQL, PostgreSQL, and MongoDB with real-time change capture
 - **Transform Engine**: Enterprise-grade data transformation with field mapping, data masking (phone, ID card, email, bank card), type conversion, expression evaluation, and conditional filtering — processing at 800,000+ ops/sec
 - **Zero-Code Configuration**: JSON-based configuration with wizard-style GUI (in development)
+- **Config Center & Hot Reload**: Load configuration from a local file (default) or the Nacos config center; changes are applied automatically without a restart, and only the affected jobs are restarted
 - **Multi-Table Dynamic Indexing**: Automatically creates separate Elasticsearch indices for each source table with configurable naming patterns (e.g., `elasticrelay-users`, `elasticrelay-orders`)
 - **Built-in Governance**: Handles data structuring, anonymization, type conversion, normalization, and enrichment
 - **Reliability by Default**: Utilizes transaction log-level CDC, precise checkpointing for resuming, and idempotent writes to ensure data integrity
@@ -53,7 +55,7 @@ ElasticRelay is a seamless, heterogeneous data synchronizer designed to provide 
   - **MongoDB CDC**: Change Streams with replica set and sharded cluster support (mongo-driver)
 - **Transform Engine**: Complete data transformation pipeline with field mapping, type conversion, data masking (4 strategies, 5 preset templates), expression engine (16 built-in functions), and conditional filtering (10 operators)
 - **Elasticsearch Integration**: Official Elasticsearch Go client (v8) with bulk indexing support
-- **Configuration**: JSON-based configuration with automatic format detection and migration
+- **Configuration**: JSON-based configuration with automatic format detection and migration, loaded from a local file or Nacos (nacos-sdk-go v2) with hot reload
 - **Reliability**: Comprehensive error handling, DLQ system, and checkpoint management
 - **Logging**: Centralized log level control system with runtime configuration
 
@@ -68,6 +70,7 @@ The system is composed of several key components:
 - **Orchestrator**: Manages the lifecycle of synchronization tasks, supporting both legacy single-source and multi-source configurations.
 - **Dead Letter Queue**: Handles failed events with exponential backoff retry and persistent storage.
 - **Checkpoint Manager**: Persistent position tracking (binlog positions, PostgreSQL LSN, MongoDB resume tokens) for fault-tolerant resumption.
+- **Config Manager**: Loads configuration from a local file or Nacos, validates every change, and applies only the difference to running jobs.
 - **Control Plane**: The UI and configuration management backend (in development).
 
 ## Quick Start
@@ -121,11 +124,65 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO elasticrelay_user;
 Edit the configuration file `./config/parallel_config.json` and ensure the database and Elasticsearch connection information is correct.
 
 ### Step 3: Execute
+
+`start.sh` runs the binary set by `BINARY` at the top of the script (`./bin/elasticrelay-darwin-arm64` by default). Change it to match your platform, and rebuild after pulling new code, since an old binary does not include new features.
+
+#### Option A: Local File (default)
+
+Reads the configuration and transform files set by `CONFIG` and `TRANSFORM_CONFIG` in `start.sh`. Configuration changes are not watched.
+
 ```sh
-./start.sh
+./start.sh        # foreground, stop with Ctrl+C
+./start.sh -d     # background, logs in ./logs/backend.log
 ```
 
+#### Option B: Nacos Config Center (automatic hot reload)
+
+Run the binary directly with the Nacos flags:
+
+```sh
+export NACOS_PASSWORD=your-password
+./bin/elasticrelay \
+  --config-source=nacos \
+  --nacos-server-addr=http://127.0.0.1:8848 \
+  --nacos-namespace=elasticrelay \
+  --nacos-group=ELASTICRELAY \
+  --nacos-username=nacos \
+  --nacos-data-id=elasticrelay.json \
+  --nacos-transform-data-id=elasticrelay-transform.json \
+  --port 50051
+```
+
+Or use `start.sh`: change the default of `CONFIG_SOURCE` at the top of the script from `file` to `nacos`, adjust the `NACOS_*` settings below it, and put the password in a git-ignored `.env` file (`NACOS_PASSWORD=your-password`). Every setting can also be overridden with an environment variable:
+
+```sh
+export ELASTICRELAY_CONFIG_SOURCE=nacos
+export NACOS_SERVER_ADDR=http://127.0.0.1:8848
+export NACOS_NAMESPACE=elasticrelay
+export NACOS_GROUP=ELASTICRELAY
+export NACOS_USERNAME=nacos
+export NACOS_PASSWORD=your-password
+export NACOS_DATA_ID=elasticrelay.json
+export NACOS_TRANSFORM_DATA_ID=elasticrelay-transform.json
+./start.sh -d
+```
+
+A successful start logs:
+
+```
+Config source: nacos (server=http://127.0.0.1:8848, namespace=elasticrelay, group=ELASTICRELAY, dataId=elasticrelay.json, ...)
+ConfigSource(nacos): listening on nacos://elasticrelay/ELASTICRELAY/elasticrelay.json
+```
+
+After that, publishing a change in Nacos is applied within a few seconds and logged as `✅ [config] applied ...`. See [Configuration Sources & Hot Reload](#configuration-sources--hot-reload) for details.
+
+#### Stopping
+
+Press Ctrl+C in foreground mode, or run `./stop.sh` for background mode. ElasticRelay flushes buffered events to Elasticsearch and commits checkpoints before exiting.
+
 After completing these steps, ElasticRelay will start monitoring database changes and synchronizing them to Elasticsearch.
+
+> **Note:** jobs with `force_initial_sync: true` run a full snapshot on every start, and again whenever a configuration change restarts them. Set it to `false` after the first full sync if you only need incremental CDC.
 
 ---
 
@@ -315,6 +372,98 @@ The system automatically detects configuration format and supports migration bet
 - `elasticrelay-users` for the `users` table
 - `elasticrelay-orders` for the `orders` table  
 - `elasticrelay-products` for the `products` table
+
+### Configuration Sources & Hot Reload
+
+ElasticRelay can load its multi-source configuration (format 2.0 / 3.0) from a **local file** or the **Nacos config center**. The local file is the default, so existing deployments behave exactly as before.
+
+#### Nacos Mode
+
+1. Publish the configuration to Nacos as JSON. The content is the same as a local `multi_config.json`. Transform rules can be published as a second Data ID. You can use the Nacos console or the bundled script:
+
+   ```sh
+   export NACOS_SERVER_ADDR=http://127.0.0.1:8848
+   export NACOS_NAMESPACE=elasticrelay   # namespace ID, not its display name
+   export NACOS_GROUP=ELASTICRELAY
+   export NACOS_USERNAME=nacos
+   export NACOS_PASSWORD=your-password
+
+   ./scripts/nacos_publish.sh ./config/parallel_config.json elasticrelay.json
+   ./scripts/nacos_publish.sh ./config/mysql_transform.json elasticrelay-transform.json
+   ```
+
+2. Start ElasticRelay with the Nacos source:
+
+   ```sh
+   export NACOS_PASSWORD=your-password
+   ./bin/elasticrelay \
+     --config-source=nacos \
+     --nacos-server-addr=http://127.0.0.1:8848 \
+     --nacos-namespace=elasticrelay \
+     --nacos-group=ELASTICRELAY \
+     --nacos-username=nacos \
+     --nacos-data-id=elasticrelay.json \
+     --nacos-transform-data-id=elasticrelay-transform.json
+   ```
+
+3. Edit and publish the configuration in Nacos. ElasticRelay applies it automatically after a short debounce window (2 seconds by default); no restart or refresh call is needed.
+
+Nacos 2.x clients also connect to the gRPC port (HTTP port + 1000, `9848` by default), so make sure it is reachable as well.
+
+#### Hot Reload Behavior
+
+Every change is parsed and validated before it is applied. Invalid content (malformed JSON, empty or deleted configuration, duplicate IDs, jobs referencing missing sources or sinks, undefined `${VAR}` placeholders) is rejected and the current configuration keeps running.
+
+Valid changes are compared with the running configuration by ID, and only what changed is rebuilt:
+
+| Change | Effect |
+|--------|--------|
+| Data source or sink added / removed / changed | Rebuilt, and the jobs that use it are restarted |
+| Job added / removed / changed / enabled / disabled | Only that job is rebuilt |
+| Only `name` / `description` changed | Metadata updated, no restart |
+| `global.log_level`, `global.dlq_config` | Applied immediately |
+| Transform rules | Applied immediately, no job restart |
+| `global.grpc_port`, `global.metrics_port` | Warning logged; requires a process restart |
+
+When a job is restarted, buffered events are flushed to the sink and the checkpoint is committed before the new job starts. MySQL and MongoDB jobs resume from the last position when the source host and database are unchanged; PostgreSQL jobs keep using their replication slot. Jobs with `force_initial_sync: true` run a full resync whenever a configuration change restarts them.
+
+#### Options
+
+Every option can also be set with the listed environment variable. Command-line flags take precedence over environment variables. See `elasticrelay.env.example` for a template.
+
+| Flag | Environment Variable | Default | Description |
+|------|----------------------|---------|-------------|
+| `--config-source` | `ELASTICRELAY_CONFIG_SOURCE` | `file` | `file` or `nacos` |
+| `--config-watch` | `ELASTICRELAY_CONFIG_WATCH` | `false` | Hot reload when the local config file changes (file mode) |
+| `--config-debounce` | `ELASTICRELAY_CONFIG_DEBOUNCE` | `2s` | Debounce window for configuration changes |
+| `--config-apply-mode` | `ELASTICRELAY_CONFIG_APPLY_MODE` | `auto` | `dry_run` only logs the diff without applying it |
+| `--config-expand-env` | `ELASTICRELAY_CONFIG_EXPAND_ENV` | `false` | Expand `${VAR}` placeholders in `password` fields (always on in nacos mode) |
+| `--nacos-server-addr` | `NACOS_SERVER_ADDR` | — | Comma-separated server list; `http(s)://` prefix optional; port defaults to `8848` |
+| `--nacos-namespace` | `NACOS_NAMESPACE` | empty (`public`) | Namespace ID |
+| `--nacos-group` | `NACOS_GROUP` | `ELASTICRELAY` | Config group |
+| `--nacos-data-id` | `NACOS_DATA_ID` | `elasticrelay.json` | Data ID of the main configuration |
+| `--nacos-transform-data-id` | `NACOS_TRANSFORM_DATA_ID` | empty | Data ID of the transform rules; empty disables transforms |
+| `--nacos-username` / `--nacos-password` | `NACOS_USERNAME` / `NACOS_PASSWORD` | — | Username / password authentication |
+| `--nacos-access-key` / `--nacos-secret-key` | `NACOS_ACCESS_KEY` / `NACOS_SECRET_KEY` | — | AK / SK authentication |
+| `--nacos-startup-policy` | `NACOS_STARTUP_POLICY` | `fail_fast` | When Nacos is unreachable at startup: exit, or `use_cache` to start from the local snapshot |
+
+Prefer `NACOS_PASSWORD` over `--nacos-password`, since command-line arguments are visible in the process list. To keep database passwords out of Nacos, write them as `${MYSQL_PASSWORD}` in the configuration and provide the values as environment variables.
+
+#### Local File Hot Reload
+
+Hot reload also works without Nacos:
+
+```sh
+./bin/elasticrelay -config multi_config.json --config-watch=true
+```
+
+#### Runtime Inspection
+
+`gateway.v1.ConfigService` exposes `GetConfig` (active configuration with passwords masked) and `ReloadConfig` (fetch and apply immediately, also retrying objects that failed earlier):
+
+```sh
+grpcurl -plaintext localhost:50051 gateway.v1.ConfigService/ReloadConfig
+```
 
 ### Dead Letter Queue (DLQ) Support
 
@@ -569,11 +718,11 @@ Advanced parallel snapshot processing capabilities:
 
 ## Current Status
 
-**Current Version**: v1.4.4 | **Phase**: Phase 2 Complete ✅, Phase 3 In Progress (Transform Engine complete)
+**Current Version**: v1.5.0 | **Phase**: Phase 2 Complete ✅, Phase 3 In Progress (Transform Engine and Config Center complete)
 
-This project has completed its core multi-source CDC platform (Phase 2) and has delivered the Transform Engine as the first major Phase 3 milestone. PostgreSQL CDC has been production-hardened with extensive stability fixes.
+This project has completed its core multi-source CDC platform (Phase 2) and has delivered the Transform Engine and the Nacos config center with hot reload as Phase 3 milestones. PostgreSQL CDC has been production-hardened with extensive stability fixes.
 
-### ✅ Completed Features (v1.4.4)
+### ✅ Completed Features (v1.5.0)
 - **Multi-Source CDC Pipeline**: 
   - **MySQL CDC**: Full implementation with binlog-based real-time synchronization, consistent datetime handling
   - **PostgreSQL CDC**: Production-hardened logical replication with WAL parsing, replication slots, publications, stable snapshot-to-CDC handoff, async batch decoupling, and job-scoped replication slot management
@@ -587,11 +736,13 @@ This project has completed its core multi-source CDC platform (Phase 2) and has 
   - Priority-based multi-rule matching with table pattern wildcards
   - Performance: 800,000+ ops/sec (80x above design target)
 - **Multi-Table Dynamic Indexing**: Automatic per-table Elasticsearch index creation and management with configurable naming
-- **gRPC Architecture**: Complete service definitions and implementations (Connector, Orchestrator, Sink, Transform, Health)
+- **gRPC Architecture**: Complete service definitions and implementations (Connector, Orchestrator, Sink, Transform, Config, Health)
 - **Advanced Configuration Management**: 
   - Multi-source configuration system with legacy migration support
-  - Configuration synchronization and hot-reload capabilities
+  - Configuration source switch: local file (default) or Nacos config center (v1.5.0+)
+  - Automatic hot reload with validation, diff-based apply, and graceful job restart with checkpoint resume (v1.5.0+)
   - Automatic format detection and migration tools
+- **Graceful Shutdown**: Buffered events are flushed and checkpoints committed on SIGINT / SIGTERM (v1.5.0+)
 - **Elasticsearch Integration**: High-performance bulk writing with automatic index management and data cleaning
 - **Checkpoint/Resume**: Persistent position tracking for fault tolerance with automatic recovery (binlog, LSN, resume tokens)
 - **Dead Letter Queue (DLQ)**: 

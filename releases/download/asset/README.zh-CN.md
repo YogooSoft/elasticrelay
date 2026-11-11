@@ -3,7 +3,7 @@
 ![ElasticRelay 截图](/releases/download/asset/screenshot_02.png)
 
 <p align="center">
-  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.4.4-blue.svg" alt="版本"></a>
+  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.5.0-blue.svg" alt="版本"></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/go-1.25.2+-00ADD8.svg" alt="Go 版本"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="许可证"></a>
 </p>
@@ -20,22 +20,24 @@
 
 ElasticRelay 是一个无缝的异构数据同步器，旨在从主要 OLTP 数据库（MySQL、PostgreSQL、MongoDB）实时捕获数据变更（CDC）并同步到 Elasticsearch。它的目标是比现有解决方案（如 Logstash 或 Flink）更加用户友好和可靠。
 
-## 🎉 v1.4.4 亮点 - 生产就绪的 CDC 平台（含转换引擎）
+## 🎉 v1.5.0 亮点 - Nacos 配置中心与配置热更新
 
-**三大数据库源 + 企业级数据转换：**
+**三大数据库源 + 企业级数据转换 + 集中式配置管理：**
 
-| 数据源 | 状态 | 功能 |
+| 组件 | 状态 | 功能 |
 |--------|------|------|
 | **MySQL** | ✅ 完成 | Binlog CDC + 初始同步 + 并行快照 |
 | **PostgreSQL** | ✅ 生产强化 | 逻辑复制 + WAL 解析 + 稳定的快照到 CDC 切换 |
 | **MongoDB** | ✅ 完成 | Change Streams + 分片集群 + Resume Tokens |
 | **转换引擎** | ✅ 完成 | 字段映射 + 数据脱敏 + 类型转换 + 表达式引擎 |
+| **配置中心** | 🆕 新增 | Nacos 或本地文件 + 自动热更新 + 按差异增量应用 |
 
 ## 核心功能
 
 - **多源 CDC**：完全支持 MySQL、PostgreSQL 和 MongoDB 的实时变更捕获
 - **转换引擎**：企业级数据转换，支持字段映射、数据脱敏（手机号、身份证、邮箱、银行卡）、类型转换、表达式求值和条件过滤 — 处理性能达 800,000+ 操作/秒
 - **零代码配置**：基于 JSON 的配置，带有向导式 GUI（开发中）
+- **配置中心与热更新**：可从本地文件（默认）或 Nacos 配置中心加载配置；配置变更自动生效，无需重启，只重启受影响的作业
 - **多表动态索引**：自动为每个源表创建单独的 Elasticsearch 索引，支持可配置的命名模式（例如 `elasticrelay-users`、`elasticrelay-orders`）
 - **内置治理**：处理数据结构化、匿名化、类型转换、规范化和增强
 - **默认可靠性**：利用事务日志级别的 CDC、精确的检查点恢复和幂等写入确保数据完整性
@@ -54,7 +56,7 @@ ElasticRelay 是一个无缝的异构数据同步器，旨在从主要 OLTP 数�
   - **MongoDB CDC**：支持副本集和分片集群的 Change Streams（mongo-driver）
 - **转换引擎**：完整的数据转换管道，支持字段映射、类型转换、数据脱敏（4种策略、5个预设模板）、表达式引擎（16个内置函数）和条件过滤（10个运算符）
 - **Elasticsearch 集成**：官方 Elasticsearch Go 客户端（v8），支持批量索引
-- **配置**：基于 JSON 的配置，支持自动格式检测和迁移
+- **配置**：基于 JSON 的配置，支持自动格式检测和迁移；可从本地文件或 Nacos（nacos-sdk-go v2）加载并热更新
 - **可靠性**：全面的错误处理、DLQ 系统和检查点管理
 - **日志管理**：具有运行时配置的集中日志级别控制系统
 
@@ -69,6 +71,7 @@ ElasticRelay 是一个无缝的异构数据同步器，旨在从主要 OLTP 数�
 - **编排器**：管理同步任务生命周期，同时支持传统单源与多源配置。
 - **死信队列**：对失败事件采用指数退避重试与持久化存储。
 - **检查点管理器**：持久化位置跟踪（binlog 位点、PostgreSQL LSN、MongoDB resume token），支持容错恢复。
+- **配置管理器**：从本地文件或 Nacos 加载配置，校验每次变更，只把差异部分应用到运行中的作业。
 - **控制平面**：UI 与配置管理后端（开发中）。
 
 ## 快速开始
@@ -122,11 +125,65 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO elasticrelay_user;
 编辑配置文件 `./config/parallel_config.json`，确保数据库和 Elasticsearch 连接信息正确。
 
 ### 步骤 3：执行
+
+`start.sh` 运行脚本开头 `BINARY` 指定的二进制文件（默认 `./bin/elasticrelay-darwin-arm64`），请按实际平台修改。拉取新代码后需要重新编译，旧的二进制文件不包含新功能。
+
+#### 方式 A：本地文件（默认）
+
+读取 `start.sh` 中 `CONFIG` 和 `TRANSFORM_CONFIG` 指定的配置文件和转换规则文件，运行期间不监听配置变化。
+
 ```sh
-./start.sh
+./start.sh        # 前台运行，Ctrl+C 停止
+./start.sh -d     # 后台运行，日志在 ./logs/backend.log
 ```
 
+#### 方式 B：Nacos 配置中心（配置变更自动生效）
+
+直接运行二进制文件并传入 Nacos 参数：
+
+```sh
+export NACOS_PASSWORD=your-password
+./bin/elasticrelay \
+  --config-source=nacos \
+  --nacos-server-addr=http://127.0.0.1:8848 \
+  --nacos-namespace=elasticrelay \
+  --nacos-group=ELASTICRELAY \
+  --nacos-username=nacos \
+  --nacos-data-id=elasticrelay.json \
+  --nacos-transform-data-id=elasticrelay-transform.json \
+  --port 50051
+```
+
+也可以使用 `start.sh`：把脚本开头 `CONFIG_SOURCE` 的默认值从 `file` 改为 `nacos`，按需修改下方的 `NACOS_*` 设置，并把密码写入不受 git 管理的 `.env` 文件（`NACOS_PASSWORD=your-password`）。每项设置也都可以用环境变量覆盖：
+
+```sh
+export ELASTICRELAY_CONFIG_SOURCE=nacos
+export NACOS_SERVER_ADDR=http://127.0.0.1:8848
+export NACOS_NAMESPACE=elasticrelay
+export NACOS_GROUP=ELASTICRELAY
+export NACOS_USERNAME=nacos
+export NACOS_PASSWORD=your-password
+export NACOS_DATA_ID=elasticrelay.json
+export NACOS_TRANSFORM_DATA_ID=elasticrelay-transform.json
+./start.sh -d
+```
+
+启动成功后日志中会出现：
+
+```
+Config source: nacos (server=http://127.0.0.1:8848, namespace=elasticrelay, group=ELASTICRELAY, dataId=elasticrelay.json, ...)
+ConfigSource(nacos): listening on nacos://elasticrelay/ELASTICRELAY/elasticrelay.json
+```
+
+之后在 Nacos 中发布配置变更，几秒内自动生效，日志中会出现 `✅ [config] applied ...`。详见[配置来源与热更新](#配置来源与热更新)。
+
+#### 停止
+
+前台运行时按 Ctrl+C，后台运行时执行 `./stop.sh`。ElasticRelay 会先把缓冲中的事件写入 Elasticsearch 并提交位点，然后退出。
+
 完成这些步骤后，ElasticRelay 将开始监控数据库变更并将其同步到 Elasticsearch。
+
+> **注意：** 配置了 `force_initial_sync: true` 的作业每次启动都会做一次全量快照，因配置变更重启时也会再做一次。如果只需要增量同步，首次全量完成后可以改为 `false`。
 
 ---
 
@@ -316,6 +373,98 @@ ElasticRelay 支持传统单配置和现代多配置格式，具有自动检测�
 - `elasticrelay-users` 用于 `users` 表
 - `elasticrelay-orders` 用于 `orders` 表
 - `elasticrelay-products` 用于 `products` 表
+
+### 配置来源与热更新
+
+ElasticRelay 的多源配置（2.0 / 3.0 格式）可以从**本地文件**或 **Nacos 配置中心**加载。默认使用本地文件，存量部署的行为与之前完全一致。
+
+#### Nacos 模式
+
+1. 把配置以 JSON 格式发布到 Nacos，内容与本地 `multi_config.json` 相同；Transform 规则可以作为另一个 Data ID 发布。可以使用 Nacos 控制台，也可以使用自带脚本：
+
+   ```sh
+   export NACOS_SERVER_ADDR=http://127.0.0.1:8848
+   export NACOS_NAMESPACE=elasticrelay   # 命名空间 ID，不是显示名称
+   export NACOS_GROUP=ELASTICRELAY
+   export NACOS_USERNAME=nacos
+   export NACOS_PASSWORD=your-password
+
+   ./scripts/nacos_publish.sh ./config/parallel_config.json elasticrelay.json
+   ./scripts/nacos_publish.sh ./config/mysql_transform.json elasticrelay-transform.json
+   ```
+
+2. 以 Nacos 模式启动 ElasticRelay：
+
+   ```sh
+   export NACOS_PASSWORD=your-password
+   ./bin/elasticrelay \
+     --config-source=nacos \
+     --nacos-server-addr=http://127.0.0.1:8848 \
+     --nacos-namespace=elasticrelay \
+     --nacos-group=ELASTICRELAY \
+     --nacos-username=nacos \
+     --nacos-data-id=elasticrelay.json \
+     --nacos-transform-data-id=elasticrelay-transform.json
+   ```
+
+3. 在 Nacos 中修改并发布配置，ElasticRelay 会在短暂的防抖窗口（默认 2 秒）后自动应用，无需重启，也无需调用刷新接口。
+
+Nacos 2.x 客户端还会连接 gRPC 端口（HTTP 端口 + 1000，默认 `9848`），请确保该端口也可以访问。
+
+#### 热更新行为
+
+每次变更都会先解析和校验再应用。非法内容（JSON 格式错误、配置为空或被删除、ID 重复、作业引用了不存在的数据源或 Sink、未定义的 `${VAR}` 占位符）会被拒绝，当前配置继续运行。
+
+合法的变更会按 ID 与运行中的配置对比，只重建发生变化的部分：
+
+| 修改内容 | 生效方式 |
+|--------|--------|
+| 数据源或 Sink 的增删改 | 重建该对象，并重启使用它的作业 |
+| 作业的增删改、启停 | 只重建该作业 |
+| 只修改 `name` / `description` | 只更新元数据，不重启 |
+| `global.log_level`、`global.dlq_config` | 立即生效 |
+| Transform 规则 | 立即生效，不重启作业 |
+| `global.grpc_port`、`global.metrics_port` | 打印警告，需要重启进程 |
+
+重启作业时，会先把缓冲中的事件写入 Sink 并提交位点，再启动新作业。数据源地址和库名不变时，MySQL 和 MongoDB 作业从上次的位点续传；PostgreSQL 作业继续使用原来的复制槽。配置了 `force_initial_sync: true` 的作业，每次因配置变更重启都会重新全量同步。
+
+#### 参数
+
+每个参数都可以通过对应的环境变量设置，命令行参数优先于环境变量。模板见 `elasticrelay.env.example`。
+
+| 参数 | 环境变量 | 默认值 | 说明 |
+|------|----------|--------|------|
+| `--config-source` | `ELASTICRELAY_CONFIG_SOURCE` | `file` | `file` 或 `nacos` |
+| `--config-watch` | `ELASTICRELAY_CONFIG_WATCH` | `false` | 本地配置文件变化时热更新（file 模式） |
+| `--config-debounce` | `ELASTICRELAY_CONFIG_DEBOUNCE` | `2s` | 配置变更防抖窗口 |
+| `--config-apply-mode` | `ELASTICRELAY_CONFIG_APPLY_MODE` | `auto` | `dry_run` 时只打印差异，不应用 |
+| `--config-expand-env` | `ELASTICRELAY_CONFIG_EXPAND_ENV` | `false` | 替换 `password` 字段中的 `${VAR}` 占位符（nacos 模式始终开启） |
+| `--nacos-server-addr` | `NACOS_SERVER_ADDR` | — | 逗号分隔的服务端列表；`http(s)://` 前缀可选；端口默认 `8848` |
+| `--nacos-namespace` | `NACOS_NAMESPACE` | 空（即 `public`） | 命名空间 ID |
+| `--nacos-group` | `NACOS_GROUP` | `ELASTICRELAY` | 配置分组 |
+| `--nacos-data-id` | `NACOS_DATA_ID` | `elasticrelay.json` | 主配置的 Data ID |
+| `--nacos-transform-data-id` | `NACOS_TRANSFORM_DATA_ID` | 空 | Transform 规则的 Data ID；为空表示不使用 |
+| `--nacos-username` / `--nacos-password` | `NACOS_USERNAME` / `NACOS_PASSWORD` | — | 用户名 / 密码鉴权 |
+| `--nacos-access-key` / `--nacos-secret-key` | `NACOS_ACCESS_KEY` / `NACOS_SECRET_KEY` | — | AK / SK 鉴权 |
+| `--nacos-startup-policy` | `NACOS_STARTUP_POLICY` | `fail_fast` | 启动时 Nacos 不可用：直接退出，或 `use_cache` 使用本地快照启动 |
+
+建议使用 `NACOS_PASSWORD` 而不是 `--nacos-password`，因为命令行参数在进程列表中可见。如果不希望数据库密码存放在 Nacos 中，可以在配置里写成 `${MYSQL_PASSWORD}`，再通过环境变量提供实际值。
+
+#### 本地文件热更新
+
+不使用 Nacos 时也可以开启热更新：
+
+```sh
+./bin/elasticrelay -config multi_config.json --config-watch=true
+```
+
+#### 运行时查询
+
+`gateway.v1.ConfigService` 提供 `GetConfig`（返回当前生效配置，密码脱敏）和 `ReloadConfig`（立即拉取并应用配置，同时重试之前失败的对象）：
+
+```sh
+grpcurl -plaintext localhost:50051 gateway.v1.ConfigService/ReloadConfig
+```
 
 ### 死信队列（DLQ）支持
 
@@ -526,11 +675,11 @@ round($.price * $.quantity, 2)
 
 ## 当前状态
 
-**当前版本**：v1.4.4 | **阶段**：第 2 阶段完成 ✅，第 3 阶段进行中（转换引擎已完成）
+**当前版本**：v1.5.0 | **阶段**：第 2 阶段完成 ✅，第 3 阶段进行中（转换引擎和配置中心已完成）
 
-该项目已完成其核心多源 CDC 平台（第 2 阶段），并以转换引擎作为第 3 阶段的第一个重要里程碑交付。PostgreSQL CDC 已通过大量稳定性修复实现生产强化。
+该项目已完成其核心多源 CDC 平台（第 2 阶段），并交付了转换引擎以及支持热更新的 Nacos 配置中心作为第 3 阶段的里程碑。PostgreSQL CDC 已通过大量稳定性修复实现生产强化。
 
-### ✅ 已完成功能（v1.4.4）
+### ✅ 已完成功能（v1.5.0）
 - **多源 CDC 管道**：
   - **MySQL CDC**：基于 binlog 的实时同步完整实现，具有一致的日期时间处理
   - **PostgreSQL CDC**：生产强化的逻辑复制，包含 WAL 解析、复制槽、发布、稳定的快照到 CDC 切换、异步批处理解耦以及按任务范围的复制槽管理
@@ -544,11 +693,13 @@ round($.price * $.quantity, 2)
   - 基于优先级的多规则匹配与表模式通配符
   - 性能：800,000+ 操作/秒（为设计目标的 80 倍）
 - **多表动态索引**：自动为每个表创建和管理 Elasticsearch 索引，支持可配置的命名
-- **gRPC 架构**：完整的服务定义和实现（Connector、Orchestrator、Sink、Transform、Health）
+- **gRPC 架构**：完整的服务定义和实现（Connector、Orchestrator、Sink、Transform、Config、Health）
 - **高级配置管理**：
   - 支持传统迁移的多源配置系统
-  - 配置同步和热重载功能
+  - 配置来源开关：本地文件（默认）或 Nacos 配置中心（v1.5.0+）
+  - 自动热更新，包含校验、按差异增量应用、作业优雅重启与断点续传（v1.5.0+）
   - 自动格式检测和迁移工具
+- **优雅退出**：收到 SIGINT / SIGTERM 时写完缓冲事件并提交位点后再退出（v1.5.0+）
 - **Elasticsearch 集成**：具有自动索引管理和数据清理的高性能批量写入
 - **检查点/恢复**：用于容错的持久位置跟踪，支持自动恢复（binlog、LSN、resume tokens）
 - **死信队列（DLQ）**：

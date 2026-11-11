@@ -321,57 +321,7 @@ func (s *ConfigSyncService) mergeConfigs(newConfig, existingConfig *MultiConfig)
 }
 
 func (s *ConfigSyncService) validateMultiConfig(config *MultiConfig) error {
-	if config.Version == "" {
-		return fmt.Errorf("version cannot be empty")
-	}
-
-	// Validate data sources
-	for _, ds := range config.DataSources {
-		if ds.ID == "" {
-			return fmt.Errorf("data source ID cannot be empty")
-		}
-		if ds.Host == "" {
-			return fmt.Errorf("data source host cannot be empty for %s", ds.ID)
-		}
-		if ds.Port <= 0 || ds.Port > 65535 {
-			return fmt.Errorf("data source port must be between 1 and 65535 for %s", ds.ID)
-		}
-	}
-
-	// Validate sinks
-	for _, sink := range config.Sinks {
-		if sink.ID == "" {
-			return fmt.Errorf("sink ID cannot be empty")
-		}
-		if len(sink.Addresses) == 0 {
-			return fmt.Errorf("sink addresses cannot be empty for %s", sink.ID)
-		}
-	}
-
-	// Validate jobs
-	sourceIDs := make(map[string]bool)
-	for _, ds := range config.DataSources {
-		sourceIDs[ds.ID] = true
-	}
-	
-	sinkIDs := make(map[string]bool)
-	for _, sink := range config.Sinks {
-		sinkIDs[sink.ID] = true
-	}
-
-	for _, job := range config.Jobs {
-		if job.ID == "" {
-			return fmt.Errorf("job ID cannot be empty")
-		}
-		if !sourceIDs[job.SourceID] {
-			return fmt.Errorf("job %s references unknown data source %s", job.ID, job.SourceID)
-		}
-		if !sinkIDs[job.SinkID] {
-			return fmt.Errorf("job %s references unknown sink %s", job.ID, job.SinkID)
-		}
-	}
-
-	return nil
+	return ValidateMultiConfig(config)
 }
 
 func (s *ConfigSyncService) fileExists(path string) bool {

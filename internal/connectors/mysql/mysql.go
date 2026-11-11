@@ -104,6 +104,8 @@ func (c *Connector) Start(stream pb.ConnectorService_StartCdcServer, startCheckp
 	}
 
 	syncer := replication.NewBinlogSyncer(*c.cfg)
+	// Release the binlog connection so the same server_id can be reused by a restarted job.
+	defer syncer.Close()
 
 	handler := &eventHandler{
 		stream:            stream,

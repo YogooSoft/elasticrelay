@@ -47,10 +47,17 @@ type MultiOrchestrator struct {
 
 	// Service clients (shared across jobs)
 	sinkClients     map[string]pb.SinkServiceClient
+	sinkConns       map[string]*grpc.ClientConn
 	transformClient pb.TransformServiceClient
 
 	// Dead Letter Queue management
 	dlqManager *dlq.DLQManager
+	dlqCancel  context.CancelFunc
+
+	// Runtime configuration reconciliation
+	applyMux       sync.Mutex
+	infraHook      InfraHook
+	jobStopTimeout time.Duration
 }
 
 // MultiJob represents a synchronization job in multi-source environment
@@ -62,8 +69,23 @@ type MultiJob struct {
 	Enabled     bool
 	Description string
 
+	// ctx scopes reading from the source (snapshot and CDC); cancelling it stops intake.
 	ctx    context.Context
 	cancel context.CancelFunc
+	// procCtx scopes batching, transform, sink writes and checkpoint commits,
+	// so buffered events can still be flushed after intake has stopped.
+	procCtx    context.Context
+	procCancel context.CancelFunc
+
+	// Lifecycle
+	started    bool
+	runDone    chan struct{}
+	procDone   chan struct{}
+	drainCh    chan struct{}
+	stopOnce   sync.Once
+	resumeCp   *pb.Checkpoint
+	grpcAddr   string
+	parallelDB *sql.DB
 
 	// Job-specific clients
 	connectorInstance *connectors.ConnectorInstance
@@ -98,7 +120,9 @@ func NewMultiOrchestrator(grpcAddress string) (*MultiOrchestrator, error) {
 		connectorManager: connectors.NewConnectorManager(),
 		jobs:             make(map[string]*MultiJob),
 		sinkClients:      make(map[string]pb.SinkServiceClient),
+		sinkConns:        make(map[string]*grpc.ClientConn),
 		grpcAddress:      grpcAddress,
+		jobStopTimeout:   defaultJobStopTimeout,
 	}
 
 	// Initialize DLQ manager with default config
@@ -120,21 +144,36 @@ func NewMultiOrchestrator(grpcAddress string) (*MultiOrchestrator, error) {
 		return nil, fmt.Errorf("failed to initialize transform client: %w", err)
 	}
 
-	// Start DLQ retry processor if enabled
-	if mo.dlqManager != nil {
-		go mo.dlqManager.ProcessRetries(context.Background(), mo.retryDLQItem)
-
-		// Start DLQ statistics logger (every hour)
-		go mo.logDLQStats()
-
-		// Start DLQ cleanup task (every 24 hours, keep 7 days)
-		go mo.cleanupDLQ()
-
-		// Start orphaned DLQ cleanup (every hour)
-		go mo.cleanupOrphanedDLQItems()
-	}
+	mo.startDLQWorkers()
 
 	return mo, nil
+}
+
+// startDLQWorkers (re)starts the DLQ background workers for the current DLQ
+// manager, stopping any workers started for a previous manager.
+func (mo *MultiOrchestrator) startDLQWorkers() {
+	if mo.dlqCancel != nil {
+		mo.dlqCancel()
+		mo.dlqCancel = nil
+	}
+	if mo.dlqManager == nil {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	mo.dlqCancel = cancel
+
+	// Start DLQ retry processor
+	go mo.dlqManager.ProcessRetries(ctx, mo.retryDLQItem)
+
+	// Start DLQ statistics logger (every hour)
+	go mo.logDLQStats(ctx)
+
+	// Start DLQ cleanup task (every 24 hours, keep 7 days)
+	go mo.cleanupDLQ(ctx)
+
+	// Start orphaned DLQ cleanup (every hour)
+	go mo.cleanupOrphanedDLQItems(ctx)
 }
 
 // updateDLQConfiguration updates the DLQ manager configuration from the loaded config
@@ -187,19 +226,7 @@ func (mo *MultiOrchestrator) updateDLQConfiguration(dlqConfig *config.DLQConfig)
 	}
 	mo.jobsMux.Unlock()
 
-	// Start DLQ retry processor if enabled
-	if mo.dlqManager != nil {
-		go mo.dlqManager.ProcessRetries(context.Background(), mo.retryDLQItem)
-
-		// Start DLQ statistics logger (every hour)
-		go mo.logDLQStats()
-
-		// Start DLQ cleanup task (every 24 hours, keep 7 days)
-		go mo.cleanupDLQ()
-
-		// Start orphaned DLQ cleanup (every hour)
-		go mo.cleanupOrphanedDLQItems()
-	}
+	mo.startDLQWorkers()
 
 	log.Printf("MultiOrchestrator: DLQ configuration updated - enabled: %t, storage: %s, max_retries: %d, retry_delay: %v",
 		newDLQConfig.Enabled, newDLQConfig.StoragePath, newDLQConfig.MaxRetries, newDLQConfig.RetryDelay)
@@ -244,10 +271,22 @@ func (mo *MultiOrchestrator) initializeSinkClients(sinks []config.SinkConfig) er
 		}
 
 		mo.sinkClients[sink.ID] = pb.NewSinkServiceClient(conn)
+		mo.sinkConns[sink.ID] = conn
 		log.Printf("MultiOrchestrator: Connected to sink '%s' (%s)", sink.ID, sink.Type)
 	}
 
 	return nil
+}
+
+// closeSinkClient closes and forgets the client of a sink.
+func (mo *MultiOrchestrator) closeSinkClient(sinkID string) {
+	if conn, ok := mo.sinkConns[sinkID]; ok {
+		if err := conn.Close(); err != nil {
+			log.Printf("MultiOrchestrator: Error closing sink client '%s': %v", sinkID, err)
+		}
+		delete(mo.sinkConns, sinkID)
+	}
+	delete(mo.sinkClients, sinkID)
 }
 
 // initializeTransformClient creates shared transform client
@@ -271,6 +310,22 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 		return nil, fmt.Errorf("failed to parse job config: %w", err)
 	}
 
+	job, err := mo.createJob(jobConfig, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return &pb.Job{
+		Id:     job.ID,
+		Name:   jobConfig.Name,
+		Status: getJobStatus(job),
+		Config: req.Config,
+	}, nil
+}
+
+// createJob creates, registers and (if enabled) starts a job. resumeCp, when
+// set, is the in-memory checkpoint of a previous incarnation of the same job.
+func (mo *MultiOrchestrator) createJob(jobConfig config.SyncJobConfig, resumeCp *pb.Checkpoint) (*MultiJob, error) {
 	jobID := jobConfig.ID
 	if jobID == "" {
 		jobID = fmt.Sprintf("job-%d", time.Now().UnixNano())
@@ -308,6 +363,7 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 	}
 
 	jobCtx, cancel := context.WithCancel(context.Background())
+	procCtx, procCancel := context.WithCancel(context.Background())
 
 	// Check if parallel processing is enabled in job options
 	useParallel := true // Default to parallel processing
@@ -324,6 +380,13 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 		Description:       jobConfig.Description,
 		ctx:               jobCtx,
 		cancel:            cancel,
+		procCtx:           procCtx,
+		procCancel:        procCancel,
+		runDone:           make(chan struct{}),
+		procDone:          make(chan struct{}),
+		drainCh:           make(chan struct{}),
+		resumeCp:          resumeCp,
+		grpcAddr:          mo.grpcAddress,
 		connectorInstance: connectorInstance,
 		sinkClient:        sinkClient,
 		transformClient:   mo.transformClient,
@@ -333,6 +396,9 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 		fullSinkConfig:    fullSinkConfig,    // Full sink config for parallel manager, etc.
 		dlqManager:        mo.dlqManager,     // Share DLQ manager from orchestrator
 		cdcEvents:         make(chan *pb.ChangeEvent, batchSize*20),
+	}
+	if resumeCp != nil && resumeCp.PostgresLsn != "" {
+		job.lastCp = resumeCp
 	}
 
 	// Initialize parallel snapshot manager if enabled
@@ -351,6 +417,7 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 
 	// Start job if enabled
 	if job.Enabled {
+		job.started = true
 		go job.run()
 		log.Printf("MultiOrchestrator: Job '%s' started (%s -> %s)",
 			jobID, jobConfig.SourceID, jobConfig.SinkID)
@@ -358,12 +425,7 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 		log.Printf("MultiOrchestrator: Job '%s' created but disabled", jobID)
 	}
 
-	return &pb.Job{
-		Id:     jobID,
-		Name:   jobConfig.Name,
-		Status: getJobStatus(job),
-		Config: req.Config,
-	}, nil
+	return job, nil
 }
 
 // CreateJobsFromConfig creates all jobs from multi-config
@@ -398,6 +460,7 @@ func (mo *MultiOrchestrator) CreateJobsFromConfig() error {
 // run executes the main job loop with proper initial sync -> CDC flow
 func (j *MultiJob) run() {
 	log.Printf("MultiJob '%s': Starting synchronization from %s to %s", j.ID, j.SourceID, j.SinkID)
+	defer close(j.runDone)
 	defer log.Printf("MultiJob '%s': Stopped", j.ID)
 
 	// Process CDC events asynchronously so WAL reads are not blocked by sink latency.
@@ -443,7 +506,13 @@ func (j *MultiJob) startCDC() {
 	switch connector := j.connectorInstance.Connector.(type) {
 	case *mysql.Connector:
 		log.Printf("MultiJob '%s': Starting MySQL CDC stream", j.ID)
-		err := connector.Start(stream, nil)
+		var resume *pb.Checkpoint
+		if j.resumeCp != nil && j.resumeCp.MysqlBinlogFile != "" {
+			resume = j.resumeCp
+			log.Printf("MultiJob '%s': Resuming MySQL CDC after configuration reload from %s:%d",
+				j.ID, resume.MysqlBinlogFile, resume.MysqlBinlogPos)
+		}
+		err := connector.Start(stream, resume)
 		if err != nil {
 			log.Printf("MultiJob '%s': MySQL CDC error: %v", j.ID, err)
 		}
@@ -480,13 +549,28 @@ func (j *MultiJob) startCDC() {
 		}
 	case *mongodb.Connector:
 		log.Printf("MultiJob '%s': Starting MongoDB CDC stream (Change Streams)", j.ID)
-		err := connector.Start(stream, nil)
+		var resume *pb.Checkpoint
+		if j.resumeCp != nil && j.resumeCp.MongoResumeToken != "" {
+			resume = j.resumeCp
+			log.Printf("MultiJob '%s': Resuming MongoDB CDC after configuration reload", j.ID)
+		}
+		err := connector.Start(stream, resume)
 		if err != nil {
 			log.Printf("MultiJob '%s': MongoDB CDC error: %v", j.ID, err)
 		}
 	default:
 		log.Printf("MultiJob '%s': Unsupported connector type: %T", j.ID, connector)
 		return
+	}
+}
+
+// waitTick blocks until the next tick and reports false once ctx is cancelled.
+func waitTick(ctx context.Context, ticker *time.Ticker) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-ticker.C:
+		return true
 	}
 }
 
@@ -559,6 +643,9 @@ func (s *jobCDCStream) SetTrailer(md metadata.MD) {
 
 // addToBatch adds event to job's batch
 func (j *MultiJob) addToBatch(event *pb.ChangeEvent) error {
+	if err := j.ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case <-j.ctx.Done():
 		return j.ctx.Err()
@@ -591,6 +678,7 @@ func (j *MultiJob) resetCDCBuffers() {
 
 // cdcBatchProcessor batches CDC events without blocking the replication reader.
 func (j *MultiJob) cdcBatchProcessor() {
+	defer close(j.procDone)
 	ticker := time.NewTicker(commitInterval)
 	defer ticker.Stop()
 
@@ -607,10 +695,37 @@ func (j *MultiJob) cdcBatchProcessor() {
 			j.batchMutex.Lock()
 			j.flushBatch()
 			j.batchMutex.Unlock()
-		case <-j.ctx.Done():
+		case <-j.drainCh:
+			j.drainAndFlush()
+			return
+		case <-j.procCtx.Done():
 			return
 		}
 	}
+}
+
+// drainAndFlush writes all queued and batched events, then commits the final checkpoint.
+func (j *MultiJob) drainAndFlush() {
+	j.batchMutex.Lock()
+	defer j.batchMutex.Unlock()
+
+	drained := 0
+	for {
+		select {
+		case event := <-j.cdcEvents:
+			j.batch = append(j.batch, event)
+			drained++
+			if len(j.batch) >= batchSize {
+				j.flushBatch()
+			}
+			continue
+		default:
+		}
+		break
+	}
+	j.flushBatch()
+	j.commitCheckpointNow(true)
+	log.Printf("MultiJob '%s': Drained %d queued events and committed final checkpoint", j.ID, drained)
 }
 
 // flushBatch processes and sends batch to transform and sink
@@ -687,7 +802,7 @@ func (j *MultiJob) transformEvents(events []*pb.ChangeEvent) []*pb.ChangeEvent {
 		return events
 	}
 
-	ctx, cancel := context.WithTimeout(j.ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(j.procCtx, 30*time.Second)
 	defer cancel()
 
 	// Open transform stream
@@ -734,7 +849,7 @@ func (j *MultiJob) transformEvents(events []*pb.ChangeEvent) []*pb.ChangeEvent {
 
 // sendToSink sends events to the configured sink
 func (j *MultiJob) sendToSink(events []*pb.ChangeEvent) error {
-	stream, err := j.sinkClient.BulkWrite(j.ctx)
+	stream, err := j.sinkClient.BulkWrite(j.procCtx)
 	if err != nil {
 		return fmt.Errorf("failed to create sink stream: %w", err)
 	}
@@ -779,6 +894,11 @@ func (j *MultiJob) updateCheckpoint(cp *pb.Checkpoint) {
 
 // commitCheckpoint commits checkpoint to persistent storage at most once per commit interval.
 func (j *MultiJob) commitCheckpoint() {
+	j.commitCheckpointNow(false)
+}
+
+// commitCheckpointNow commits the latest checkpoint; force bypasses the commit interval.
+func (j *MultiJob) commitCheckpointNow(force bool) {
 	j.cpMutex.Lock()
 	if j.lastCp == nil {
 		j.cpMutex.Unlock()
@@ -790,7 +910,7 @@ func (j *MultiJob) commitCheckpoint() {
 		j.cpMutex.Unlock()
 		return
 	}
-	if !j.lastCheckpointCommitAt.IsZero() && time.Since(j.lastCheckpointCommitAt) < commitInterval {
+	if !force && !j.lastCheckpointCommitAt.IsZero() && time.Since(j.lastCheckpointCommitAt) < commitInterval {
 		j.cpMutex.Unlock()
 		return
 	}
@@ -800,7 +920,7 @@ func (j *MultiJob) commitCheckpoint() {
 
 	// Connect to the connector service to commit checkpoint.
 	// All services are running on the same gRPC server.
-	conn, err := grpc.DialContext(j.ctx, "localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.DialContext(j.procCtx, j.serviceAddress(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Printf("MultiJob '%s': Failed to connect to connector service: %v", j.ID, err)
 		return
@@ -808,7 +928,7 @@ func (j *MultiJob) commitCheckpoint() {
 	defer conn.Close()
 
 	connectorClient := pb.NewConnectorServiceClient(conn)
-	_, err = connectorClient.CommitCheckpoint(j.ctx, &pb.CommitCheckpointRequest{
+	_, err = connectorClient.CommitCheckpoint(j.procCtx, &pb.CommitCheckpointRequest{
 		JobId:      j.ID,
 		Checkpoint: checkpoint,
 	})
@@ -1146,8 +1266,10 @@ func (j *MultiJob) initializeParallelManager() error {
 
 	// Create ES client from sink configuration
 	if j.fullSinkConfig == nil || len(j.fullSinkConfig.Addresses) == 0 {
+		dbPool.Close()
 		return fmt.Errorf("sink configuration missing or has no addresses for parallel manager")
 	}
+	j.parallelDB = dbPool
 	esClient := parallel.NewSimpleESClient(
 		j.fullSinkConfig.Addresses[0],
 		j.fullSinkConfig.User,
@@ -1209,7 +1331,7 @@ func (j *MultiJob) performParallelInitialSync(tables []string) error {
 // performSerialInitialSync performs the original serial sync (fallback)
 func (j *MultiJob) performSerialInitialSync(tables []string) error {
 	// Connect to the MySQL connector service
-	conn, err := grpc.DialContext(j.ctx, "localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.DialContext(j.ctx, j.serviceAddress(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return fmt.Errorf("failed to connect to connector service: %w", err)
 	}
@@ -1673,11 +1795,11 @@ func (mo *MultiOrchestrator) processSinkBatch(job *MultiJob, events []*pb.Change
 }
 
 // logDLQStats periodically logs DLQ statistics for monitoring
-func (mo *MultiOrchestrator) logDLQStats() {
+func (mo *MultiOrchestrator) logDLQStats(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for waitTick(ctx, ticker) {
 		if mo.dlqManager == nil {
 			return
 		}
@@ -1694,11 +1816,11 @@ func (mo *MultiOrchestrator) logDLQStats() {
 }
 
 // cleanupDLQ periodically cleans up old resolved and discarded DLQ items
-func (mo *MultiOrchestrator) cleanupDLQ() {
+func (mo *MultiOrchestrator) cleanupDLQ(ctx context.Context) {
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for waitTick(ctx, ticker) {
 		if mo.dlqManager == nil {
 			return
 		}
@@ -1712,11 +1834,11 @@ func (mo *MultiOrchestrator) cleanupDLQ() {
 }
 
 // cleanupOrphanedDLQItems removes DLQ items that no longer have compatible jobs
-func (mo *MultiOrchestrator) cleanupOrphanedDLQItems() {
+func (mo *MultiOrchestrator) cleanupOrphanedDLQItems(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for waitTick(ctx, ticker) {
 		if mo.dlqManager == nil {
 			return
 		}
