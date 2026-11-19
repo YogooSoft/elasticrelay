@@ -3,7 +3,7 @@
 ![ElasticRelay 截图](/releases/download/asset/screenshot_02.png)
 
 <p align="center">
-  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.5.0-blue.svg" alt="版本"></a>
+  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.5.2-blue.svg" alt="版本"></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/go-1.25.2+-00ADD8.svg" alt="Go 版本"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="许可证"></a>
 </p>
@@ -20,7 +20,20 @@
 
 ElasticRelay 是一个无缝的异构数据同步器，旨在从主要 OLTP 数据库（MySQL、PostgreSQL、MongoDB）实时捕获数据变更（CDC）并同步到 Elasticsearch。它的目标是比现有解决方案（如 Logstash 或 Flink）更加用户友好和可靠。
 
-## 🎉 v1.5.0 亮点 - Nacos 配置中心与配置热更新
+## 🎉 v1.5.2 亮点 — 热更新、断点与多数据源
+
+**近期版本（完整说明见 [CHANGELOG.md](../../../CHANGELOG.md)）：**
+
+| 方面 | v1.5.2 |
+|------|--------|
+| **Nacos `table_filters`** | 在已有数据源上**新增**集合/表时，仅对新增名称做串行快照，再从原断点续跑 CDC |
+| **MongoDB 快照** | 全量或补同步前记录 **resume token**，快照期间的写入不会丢失 |
+| **多数据源** | 进程内 Connector 按作业的 `source_id` **路由**，不再固定使用 `data_sources` 第一项 |
+| **断点持久化** | 进程重启从对应文件加载位点（`checkpoints.json` / `postgresql_checkpoints.json` / `mongodb_checkpoints.json`） |
+
+**v1.5.1：** PostgreSQL `REPLICA IDENTITY FULL` 表在 ES 中的文档 `_id` 使用真实主键，避免更新/删除产生重复或孤儿文档。
+
+## v1.5.0 — Nacos 配置中心与配置热更新
 
 **三大数据库源 + 企业级数据转换 + 集中式配置管理：**
 
@@ -70,7 +83,7 @@ ElasticRelay 是一个无缝的异构数据同步器，旨在从主要 OLTP 数�
 - **ES Sink Writer**：以高效批次将数据写入 Elasticsearch，并自动管理索引。
 - **编排器**：管理同步任务生命周期，同时支持传统单源与多源配置。
 - **死信队列**：对失败事件采用指数退避重试与持久化存储。
-- **检查点管理器**：持久化位置跟踪（binlog 位点、PostgreSQL LSN、MongoDB resume token），支持容错恢复。
+- **检查点管理器**：按引擎分别写入位点文件（`checkpoints.json`、`postgresql_checkpoints.json`、`mongodb_checkpoints.json`）；进程重启与热更新重启（数据源身份不变）时自动加载。
 - **配置管理器**：从本地文件或 Nacos 加载配置，校验每次变更，只把差异部分应用到运行中的作业。
 - **控制平面**：UI 与配置管理后端（开发中）。
 
@@ -420,6 +433,7 @@ Nacos 2.x 客户端还会连接 gRPC 端口（HTTP 端口 + 1000，默认 `9848`
 | 修改内容 | 生效方式 |
 |--------|--------|
 | 数据源或 Sink 的增删改 | 重建该对象，并重启使用它的作业 |
+| 同一库上扩充 `table_filters`（v1.5.2+） | 作业重启；**仅对新增**表/集合做快照，再从已保存断点续跑 CDC |
 | 作业的增删改、启停 | 只重建该作业 |
 | 只修改 `name` / `description` | 只更新元数据，不重启 |
 | `global.log_level`、`global.dlq_config` | 立即生效 |
@@ -427,6 +441,18 @@ Nacos 2.x 客户端还会连接 gRPC 端口（HTTP 端口 + 1000，默认 `9848`
 | `global.grpc_port`、`global.metrics_port` | 打印警告，需要重启进程 |
 
 重启作业时，会先把缓冲中的事件写入 Sink 并提交位点，再启动新作业。数据源地址和库名不变时，MySQL 和 MongoDB 作业从上次的位点续传；PostgreSQL 作业继续使用原来的复制槽。配置了 `force_initial_sync: true` 的作业，每次因配置变更重启都会重新全量同步。
+
+**多数据源（v1.5.2+）：** 快照与断点相关 RPC 按作业的 `source_id` 路由到对应 Connector，而不是始终使用配置列表中的第一个数据源。
+
+#### 断点文件
+
+| 数据源 | 文件 | 内容 |
+|--------|------|------|
+| MySQL | `checkpoints.json` | 各作业的 binlog 文件与位点 |
+| PostgreSQL | `postgresql_checkpoints.json` | 各作业的 LSN |
+| MongoDB | `mongodb_checkpoints.json` | 各作业的 change stream resume token |
+
+**冷启动**（进程重启）时，已启用的作业会从对应文件加载有效断点后再启动 CDC。从旧版本升级后，MongoDB 作业可能出现 `Loaded persisted checkpoint for job`、`Resuming MongoDB CDC from resume token` 日志，属正常现象。
 
 #### 参数
 
@@ -487,6 +513,7 @@ ElasticRelay 提供全面的 PostgreSQL CDC 功能，具有高级特性：
 - **复制槽**：自动创建和管理逻辑复制槽
 - **发布**：用于表过滤的动态发布管理
 - **LSN 管理**：用于检查点/恢复功能的精确日志序列号跟踪
+- **文档 ID（v1.5.1+）**：`REPLICA IDENTITY FULL` 时 ES 文档 `_id` 使用 `pg_index` 中的真实主键，而非把所有 key 列拼接，避免更新产生重复文档
 
 #### PostgreSQL 高级功能
 - **连接池**：具有可配置限制的智能连接池管理
@@ -528,8 +555,13 @@ ElasticRelay 使用 Change Streams 提供完整的 MongoDB CDC 功能：
 #### MongoDB 核心功能
 - **Change Streams**：使用 MongoDB 原生 Change Streams API 的实时 CDC
 - **集群支持**：自动检测和支持副本集和分片集群
-- **Resume Tokens**：用于检查点/恢复功能的持久 resume token 管理
+- **Resume Tokens**：持久化到 `mongodb_checkpoints.json`，支持热更新与进程重启后续传
+- **快照与 CDC 衔接（v1.5.2+）**：全量或补集合快照前记录 change stream 位点，快照期间写入通过 CDC 按 `_id` 幂等回放
 - **操作映射**：完全支持 INSERT、UPDATE、REPLACE 和 DELETE 操作
+
+#### Nacos / `table_filters`（v1.5.2+）
+
+在 Nacos 中为已有 MongoDB 数据源**追加**集合名时，仅对新集合做快照并建 ES 索引，然后继续 CDC。日志中可见 `Snapshotting N table(s) added by configuration reload`。若在 v1.5.1 及更早版本已加过集合但未全量同步，升级后可临时设置 `force_initial_sync: true` 或再次发布 `table_filters`。
 
 #### MongoDB 高级功能
 - **分片集群支持**：
@@ -675,11 +707,11 @@ round($.price * $.quantity, 2)
 
 ## 当前状态
 
-**当前版本**：v1.5.0 | **阶段**：第 2 阶段完成 ✅，第 3 阶段进行中（转换引擎和配置中心已完成）
+**当前版本**：v1.5.2 | **阶段**：第 2 阶段完成 ✅，第 3 阶段进行中（转换引擎和配置中心已完成）
 
-该项目已完成其核心多源 CDC 平台（第 2 阶段），并交付了转换引擎以及支持热更新的 Nacos 配置中心作为第 3 阶段的里程碑。PostgreSQL CDC 已通过大量稳定性修复实现生产强化。
+该项目已完成其核心多源 CDC 平台（第 2 阶段），并交付了转换引擎以及支持热更新的 Nacos 配置中心作为第 3 阶段的里程碑。v1.5.1–v1.5.2 侧重 PostgreSQL 文档 ID、`table_filters` 热扩容、MongoDB 快照安全、多数据源路由与断点持久化。
 
-### ✅ 已完成功能（v1.5.0）
+### ✅ 已完成功能（截至 v1.5.2）
 - **多源 CDC 管道**：
   - **MySQL CDC**：基于 binlog 的实时同步完整实现，具有一致的日期时间处理
   - **PostgreSQL CDC**：生产强化的逻辑复制，包含 WAL 解析、复制槽、发布、稳定的快照到 CDC 切换、异步批处理解耦以及按任务范围的复制槽管理
@@ -697,11 +729,12 @@ round($.price * $.quantity, 2)
 - **高级配置管理**：
   - 支持传统迁移的多源配置系统
   - 配置来源开关：本地文件（默认）或 Nacos 配置中心（v1.5.0+）
-  - 自动热更新，包含校验、按差异增量应用、作业优雅重启与断点续传（v1.5.0+）
+  - 自动热更新：校验、按差异应用、优雅重启、`table_filters` 增量快照与断点续传（v1.5.0+；增量快照 v1.5.2+）
   - 自动格式检测和迁移工具
 - **优雅退出**：收到 SIGINT / SIGTERM 时写完缓冲事件并提交位点后再退出（v1.5.0+）
 - **Elasticsearch 集成**：具有自动索引管理和数据清理的高性能批量写入
-- **检查点/恢复**：用于容错的持久位置跟踪，支持自动恢复（binlog、LSN、resume tokens）
+- **检查点/恢复**：分引擎位点文件、进程重启加载、MongoDB 快照前 resume token（v1.5.2+）
+- **多数据源进程内路由（v1.5.2+）**：每个数据源独立 Connector 服务；快照/断点 RPC 按作业 → 数据源路由
 - **死信队列（DLQ）**：
   - 具有指数退避重试的全面 DLQ 系统（可配置的最大重试次数）
   - 具有去重和状态跟踪的持久存储

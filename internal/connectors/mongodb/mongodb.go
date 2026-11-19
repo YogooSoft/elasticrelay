@@ -226,25 +226,9 @@ func (c *Connector) Start(stream pb.ConnectorService_StartCdcServer, startCheckp
 		log.Println("No checkpoint provided, starting from current position")
 	}
 
-	// Build pipeline for filtering collections
-	pipeline := c.buildPipeline()
-
-	// Watch the database or specific collections
-	var changeStream *mongo.ChangeStream
-	var err error
-
-	if len(c.collectionFilter) == 1 {
-		// Watch single collection
-		coll := c.client.Database(c.database).Collection(c.collectionFilter[0])
-		changeStream, err = coll.Watch(ctx, pipeline, opts)
-	} else {
-		// Watch entire database (with optional pipeline filter)
-		db := c.client.Database(c.database)
-		changeStream, err = db.Watch(ctx, pipeline, opts)
-	}
-
+	changeStream, err := c.watch(ctx, c.client, opts)
 	if err != nil {
-		return fmt.Errorf("failed to create change stream: %w", err)
+		return err
 	}
 	defer changeStream.Close(ctx)
 
@@ -276,6 +260,51 @@ func (c *Connector) Start(stream pb.ConnectorService_StartCdcServer, startCheckp
 	}
 
 	return nil
+}
+
+// watch opens the change stream for the configured database or collections.
+func (c *Connector) watch(ctx context.Context, client *mongo.Client, opts *options.ChangeStreamOptions) (*mongo.ChangeStream, error) {
+	pipeline := c.buildPipeline()
+
+	var changeStream *mongo.ChangeStream
+	var err error
+	if len(c.collectionFilter) == 1 {
+		changeStream, err = client.Database(c.database).Collection(c.collectionFilter[0]).Watch(ctx, pipeline, opts)
+	} else {
+		changeStream, err = client.Database(c.database).Watch(ctx, pipeline, opts)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to create change stream: %w", err)
+	}
+	return changeStream, nil
+}
+
+// CurrentResumeToken returns an encoded resume token for the current position
+// of the change stream Start opens. Taken before a snapshot, it lets CDC replay
+// every change made while the snapshot runs. It uses its own client, so it is
+// safe to call while another job runs Start on this connector.
+func (c *Connector) CurrentResumeToken(ctx context.Context) (string, error) {
+	client, err := mongo.Connect(ctx, options.Client().
+		ApplyURI(c.uri).
+		SetConnectTimeout(10*time.Second).
+		SetServerSelectionTimeout(5*time.Second))
+	if err != nil {
+		return "", fmt.Errorf("failed to connect to MongoDB: %w", err)
+	}
+	defer client.Disconnect(ctx)
+
+	changeStream, err := c.watch(ctx, client, options.ChangeStream())
+	if err != nil {
+		return "", err
+	}
+	defer changeStream.Close(ctx)
+
+	// Requires MongoDB 4.0.7+, which returns a post-batch resume token on open.
+	token := changeStream.ResumeToken()
+	if token == nil {
+		return "", fmt.Errorf("server returned no resume token for the change stream")
+	}
+	return encodeResumeToken(token), nil
 }
 
 // buildPipeline builds the aggregation pipeline for filtering
@@ -396,13 +425,15 @@ func (h *EventHandler) HandleChange(event *ChangeEvent, resumeToken bson.Raw) er
 	return nil
 }
 
+// checkpointFileMu guards checkpointFilePath, which every Server writes.
+var checkpointFileMu sync.RWMutex
+
 // Server implements the ConnectorService for MongoDB
 type Server struct {
 	pb.UnimplementedConnectorServiceServer
-	config          *config.Config
-	checkpointMutex sync.RWMutex
-	useParallel     bool // Use parallel snapshot processing
-	parallelConfig  *parallel.SnapshotConfig
+	config         *config.Config
+	useParallel    bool // Use parallel snapshot processing
+	parallelConfig *parallel.SnapshotConfig
 }
 
 // ServerOptions contains options for the MongoDB server
@@ -591,8 +622,8 @@ func (s *Server) CommitCheckpoint(ctx context.Context, req *pb.CommitCheckpointR
 		return nil, fmt.Errorf("commit request has no checkpoint")
 	}
 
-	s.checkpointMutex.Lock()
-	defer s.checkpointMutex.Unlock()
+	checkpointFileMu.Lock()
+	defer checkpointFileMu.Unlock()
 
 	checkpoints, err := s.loadAllCheckpoints()
 	if err != nil {
@@ -614,9 +645,18 @@ func (s *Server) CommitCheckpoint(ctx context.Context, req *pb.CommitCheckpointR
 	return &pb.CommitCheckpointResponse{Success: true}, nil
 }
 
+// LoadCheckpoint implements the gRPC service endpoint.
+func (s *Server) LoadCheckpoint(ctx context.Context, req *pb.LoadCheckpointRequest) (*pb.LoadCheckpointResponse, error) {
+	cp, err := s.loadCheckpoint(req.JobId)
+	if err != nil {
+		return &pb.LoadCheckpointResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &pb.LoadCheckpointResponse{Success: true, Checkpoint: cp}, nil
+}
+
 func (s *Server) loadCheckpoint(jobId string) (*pb.Checkpoint, error) {
-	s.checkpointMutex.RLock()
-	defer s.checkpointMutex.RUnlock()
+	checkpointFileMu.RLock()
+	defer checkpointFileMu.RUnlock()
 
 	checkpoints, err := s.loadAllCheckpoints()
 	if err != nil {

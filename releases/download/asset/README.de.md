@@ -3,7 +3,7 @@
 ![ElasticRelay Screenshot](/releases/download/asset/screenshot_02.png)
 
 <p align="center">
-  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.4.4-blue.svg" alt="Version"></a>
+  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.5.2-blue.svg" alt="Version"></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/go-1.25.2+-00ADD8.svg" alt="Go Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Lizenz"></a>
 </p>
@@ -20,9 +20,22 @@
 
 ElasticRelay ist ein nahtloser, heterogener Daten-Synchronisierer, der entwickelt wurde, um Echtzeit-Change Data Capture (CDC) von wichtigen OLTP-Datenbanken (MySQL, PostgreSQL, MongoDB) zu Elasticsearch bereitzustellen. Es zielt darauf ab, benutzerfreundlicher und zuverlässiger als bestehende Lösungen wie Logstash oder Flink zu sein.
 
-## 🎉 v1.4.4 Highlights - Produktionsreife CDC-Plattform mit Transform Engine
+## 🎉 v1.5.2 Highlights — Hot Reload, Checkpoints & Multi-Source
 
-**Drei Hauptdatenbankquellen und Enterprise-Datentransformation:**
+**Aktuelle Version (Details: [CHANGELOG.md](../../../CHANGELOG.md)):**
+
+| Bereich | v1.5.2 |
+|---------|--------|
+| **Nacos `table_filters`** | Neue Tabellen/Collections → **nur Snapshot der Neuzugänge**, dann CDC ab gespeichertem Checkpoint |
+| **MongoDB Snapshots** | **Resume Token** vor Voll- oder Nach-Snapshot, keine verlorenen Schreibvorgänge während des Snapshots |
+| **Multi-Source** | In-Process-Connector **pro Datenquelle** (Routing per Job), nicht mehr nur der erste Eintrag |
+| **Checkpoints** | Neustart lädt `checkpoints.json` / `postgresql_checkpoints.json` / `mongodb_checkpoints.json` |
+
+**v1.5.1:** PostgreSQL mit `REPLICA IDENTITY FULL` — ES-`_id` = echter Primärschlüssel (keine Duplikate bei Updates).
+
+## v1.5.0 — Nacos-Konfigurationszentrale & Hot Reload
+
+**Drei Hauptdatenbankquellen + Enterprise-Datentransformation + zentrale Konfiguration:**
 
 | Quelle | Status | Funktionen |
 |--------|--------|----------|
@@ -30,12 +43,14 @@ ElasticRelay ist ein nahtloser, heterogener Daten-Synchronisierer, der entwickel
 | **PostgreSQL** | ✅ Produktionsgehärtet | Logische Replikation + WAL-Parsing + Stabiler Snapshot-zu-CDC-Übergang |
 | **MongoDB** | ✅ Vollständig | Change Streams + Sharded Clusters + Resume Tokens |
 | **Transform Engine** | ✅ Vollständig | Feld-Mapping + Datenmaskierung + Typkonvertierung + Ausdrucks-Engine |
+| **Config Center** | 🆕 Neu | Nacos oder lokale Datei + automatisches Hot Reload + diff-basiertes Apply |
 
 ## Hauptfunktionen
 
 - **Multi-Source CDC**: Vollständige Unterstützung für MySQL, PostgreSQL und MongoDB mit Echtzeit-Änderungserfassung
 - **Transform Engine**: Enterprise-Datentransformation mit Feld-Mapping, Datenmaskierung (Telefon, Ausweis, E-Mail, Bankkarte), Typkonvertierung, Ausdrucksauswertung und bedingter Filterung — Verarbeitung mit 800.000+ Ops/Sek
 - **Zero-Code Konfiguration**: JSON-basierte Konfiguration mit Assistenten-GUI (in Entwicklung)
+- **Config Center & Hot Reload**: Lokale Datei (Standard) oder Nacos; Änderungen ohne Prozessneustart, nur betroffene Jobs werden neu gestartet (v1.5.0+)
 - **Multi-Table Dynamische Indexierung**: Erstellt automatisch separate Elasticsearch-Indizes für jede Quelltabelle mit konfigurierbaren Namensmustern (z.B. `elasticrelay-users`, `elasticrelay-orders`)
 - **Eingebaute Governance**: Handhabt Datenstrukturierung, Anonymisierung, Typkonvertierung, Normalisierung und Anreicherung
 - **Zuverlässigkeit von Anfang an**: Nutzt CDC auf Transaktionslog-Ebene, präzises Checkpointing für Wiederaufnahme und idempotente Schreibvorgänge zur Sicherstellung der Datenintegrität
@@ -68,7 +83,8 @@ Das System besteht aus mehreren Schlüsselkomponenten:
 - **ES Sink Writer**: Schreibt Daten effizient in Batches nach Elasticsearch mit automatischer Indexverwaltung.
 - **Orchestrator**: Verwaltet den Lebenszyklus von Synchronisierungsaufgaben und unterstützt sowohl Legacy-Einzelquellen- als auch Multi-Source-Konfigurationen.
 - **Dead Letter Queue**: Behandelt fehlgeschlagene Events mit exponentiellem Backoff-Retry und persistentem Speicher.
-- **Checkpoint Manager**: Persistente Positionsverfolgung (Binlog-Positionen, PostgreSQL LSN, MongoDB Resume Tokens) für fehlertolerante Wiederaufnahme.
+- **Checkpoint Manager**: Pro Engine eigene Dateien (`checkpoints.json`, `postgresql_checkpoints.json`, `mongodb_checkpoints.json`); Laden beim Prozess- und Job-Neustart (v1.5.2+).
+- **Config Manager**: Lädt Konfiguration aus Datei oder Nacos, validiert Änderungen, wendet nur Diffs an (v1.5.0+).
 - **Control Plane**: Die Benutzeroberfläche und das Konfigurationsmanagement-Backend (in Entwicklung).
 
 ## Schnellstart
@@ -317,6 +333,29 @@ Das System erkennt automatisch das Konfigurationsformat und unterstützt die Mig
 - `elasticrelay-orders` für die `orders`-Tabelle  
 - `elasticrelay-products` für die `products`-Tabelle
 
+### Konfigurationsquellen & Hot Reload
+
+Multi-Source-Konfiguration (Format 2.0 / 3.0) aus **lokaler Datei** (Standard) oder **Nacos**. Start mit `--config-source=nacos` und den `NACOS_*`-Variablen; Publishing per `./scripts/nacos_publish.sh`. Vollständige Flag-Liste: `elasticrelay.env.example` und [README.md](/README.md).
+
+#### Hot-Reload-Verhalten (v1.5.2+)
+
+| Änderung | Wirkung |
+|----------|---------|
+| Datenquelle / Sink geändert | Neustart abhängiger Jobs |
+| `table_filters` erweitert (gleiche DB) | Snapshot **nur neuer** Namen, CDC ab Checkpoint |
+| Job geändert | Nur dieser Job |
+| Transform-Regeln | Sofort, ohne Job-Neustart |
+
+**Multi-Source (v1.5.2+):** Snapshot- und Checkpoint-RPCs werden der Job-`source_id` zugeordnet.
+
+#### Checkpoint-Dateien
+
+| Quelle | Datei |
+|--------|-------|
+| MySQL | `checkpoints.json` |
+| PostgreSQL | `postgresql_checkpoints.json` |
+| MongoDB | `mongodb_checkpoints.json` |
+
 ### Dead Letter Queue (DLQ) Unterstützung
 
 ElasticRelay enthält ein umfassendes DLQ-System zur Behandlung fehlgeschlagener Events:
@@ -338,6 +377,7 @@ ElasticRelay bietet umfassende PostgreSQL CDC-Funktionen mit erweiterten Feature
 - **Replikationsslots**: Automatische Erstellung und Verwaltung von logischen Replikationsslots
 - **Publications**: Dynamische Publication-Verwaltung für Tabellenfilterung
 - **LSN-Verwaltung**: Präzise Log Sequence Number Verfolgung für Checkpoint/Resume-Funktionalität
+- **Dokument-IDs (v1.5.1+)**: Bei `REPLICA IDENTITY FULL` bleibt die ES-`_id` der echte Primärschlüssel aus `pg_index`
 
 #### Erweiterte PostgreSQL Funktionen
 - **Connection Pooling**: Intelligente Verbindungspool-Verwaltung mit konfigurierbaren Limits
@@ -379,8 +419,13 @@ ElasticRelay bietet vollständige MongoDB CDC-Funktionen mit Change Streams:
 #### Kern MongoDB Features
 - **Change Streams**: Echtzeit-CDC mit MongoDB's nativer Change Streams API
 - **Cluster-Unterstützung**: Automatische Erkennung und Unterstützung für Replica Sets und Sharded Clusters
-- **Resume Tokens**: Persistentes Resume Token Management für Checkpoint/Resume-Funktionalität
+- **Resume Tokens**: In `mongodb_checkpoints.json`; Wiederaufnahme nach Neustart/Hot Reload (v1.5.2+)
+- **Snapshot-sicheres CDC (v1.5.2+)**: Resume Token vor Snapshot; überlappende Schreibvorgänge werden per CDC idempotent nachgezogen
 - **Operations-Mapping**: Vollständige Unterstützung für INSERT, UPDATE, REPLACE und DELETE Operationen
+
+#### Nacos / `table_filters` (v1.5.2+)
+
+Neue Collections in Nacos → Snapshot nur der Neuzugänge, dann CDC. Log: `Snapshotting N table(s) added by configuration reload`. Bei älteren Versionen ggf. einmalig `force_initial_sync: true`.
 
 #### Erweiterte MongoDB Funktionen
 - **Sharded Cluster Unterstützung**: 
@@ -526,11 +571,11 @@ Erweiterte parallele Snapshot-Verarbeitungsfähigkeiten:
 
 ## Aktueller Status
 
-**Aktuelle Version**: v1.4.4 | **Phase**: Phase 2 Abgeschlossen ✅, Phase 3 in Arbeit (Transform Engine abgeschlossen)
+**Aktuelle Version**: v1.5.2 | **Phase**: Phase 2 Abgeschlossen ✅, Phase 3 in Arbeit (Transform Engine & Config Center abgeschlossen)
 
-Dieses Projekt hat seine Kern-Multi-Source-CDC-Plattform (Phase 2) abgeschlossen und die Transform Engine als ersten großen Meilenstein von Phase 3 geliefert. PostgreSQL-CDC wurde mit umfangreichen Stabilitätsfixes produktionsgehärtet.
+v1.5.1–v1.5.2: PostgreSQL-Dokument-IDs, Nacos-`table_filters`, MongoDB-Snapshot-Sicherheit, Multi-Source-Routing, persistente Checkpoints.
 
-### ✅ Abgeschlossene Features (v1.4.4)
+### ✅ Abgeschlossene Features (bis v1.5.2)
 - **Multi-Source CDC Pipeline**: 
   - **MySQL CDC**: Vollständige Implementierung mit binlog-basierter Echtzeit-Synchronisierung und konsistenter Datums-/Zeitbehandlung
   - **PostgreSQL CDC**: Produktionsgehärtete logische Replikation mit WAL-Parsing, Replikationsslots, Publications, stabilem Snapshot-zu-CDC-Übergang, asynchroner Batch-Entkopplung und jobbezogenem Replikationsslot-Management
@@ -547,10 +592,11 @@ Dieses Projekt hat seine Kern-Multi-Source-CDC-Plattform (Phase 2) abgeschlossen
 - **gRPC Architektur**: Vollständige Service-Definitionen und Implementierungen (Connector, Orchestrator, Sink, Transform, Health)
 - **Erweitertes Konfigurationsmanagement**: 
   - Multi-Source Konfigurationssystem mit Legacy-Migrationsunterstützung
-  - Konfigurationssynchronisierung und Hot-Reload-Fähigkeiten
+  - Nacos oder lokale Datei, Hot Reload, Snapshot neuer `table_filters` (v1.5.2+)
   - Automatische Formaterkennung und Migrationstools
 - **Elasticsearch Integration**: Hochleistungs-Bulk-Schreiben mit automatischem Index-Management und Datenbereinigung
-- **Checkpoint/Resume**: Persistente Positionsverfolgung für Fehlertoleranz mit automatischer Wiederherstellung (binlog, LSN, resume tokens)
+- **Checkpoint/Resume**: Pro-Engine-Dateien, Laden beim Neustart, MongoDB Pre-Snapshot-Token (v1.5.2+)
+- **Multi-Source In-Process-Routing (v1.5.2+)**: Connector pro Datenquelle
 - **Dead Letter Queue (DLQ)**: 
   - Umfassendes DLQ-System mit exponentiellem Backoff-Retry (konfigurierbare max. Wiederholungen)
   - Persistenter Speicher mit Deduplizierung und Status-Tracking

@@ -347,11 +347,13 @@ func getMasterPosition(ctx context.Context, cfg *replication.BinlogSyncerConfig)
 	}, nil
 }
 
+// checkpointFileMu guards checkpointFilePath, which every Server writes.
+var checkpointFileMu sync.RWMutex
+
 // Server implements the ConnectorService for MySQL.
 type Server struct {
 	pb.UnimplementedConnectorServiceServer
-	config          *config.Config
-	checkpointMutex sync.RWMutex
+	config *config.Config
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {
@@ -547,8 +549,8 @@ func (s *Server) CommitCheckpoint(ctx context.Context, req *pb.CommitCheckpointR
 		return nil, fmt.Errorf("commit request has no checkpoint")
 	}
 
-	s.checkpointMutex.Lock()
-	defer s.checkpointMutex.Unlock()
+	checkpointFileMu.Lock()
+	defer checkpointFileMu.Unlock()
 
 	checkpoints, err := s.loadAllCheckpoints()
 	if err != nil {
@@ -570,9 +572,18 @@ func (s *Server) CommitCheckpoint(ctx context.Context, req *pb.CommitCheckpointR
 	return &pb.CommitCheckpointResponse{Success: true}, nil
 }
 
+// LoadCheckpoint implements the gRPC service endpoint.
+func (s *Server) LoadCheckpoint(ctx context.Context, req *pb.LoadCheckpointRequest) (*pb.LoadCheckpointResponse, error) {
+	cp, err := s.loadCheckpoint(req.JobId)
+	if err != nil {
+		return &pb.LoadCheckpointResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &pb.LoadCheckpointResponse{Success: true, Checkpoint: cp}, nil
+}
+
 func (s *Server) loadCheckpoint(jobId string) (*pb.Checkpoint, error) {
-	s.checkpointMutex.RLock()
-	defer s.checkpointMutex.RUnlock()
+	checkpointFileMu.RLock()
+	defer checkpointFileMu.RUnlock()
 
 	checkpoints, err := s.loadAllCheckpoints()
 	if err != nil {

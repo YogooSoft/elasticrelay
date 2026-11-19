@@ -116,6 +116,7 @@ func (mo *MultiOrchestrator) stopJobs(ids []string) map[string]*pb.Checkpoint {
 
 	checkpoints := make(map[string]*pb.Checkpoint, len(jobs))
 	for _, job := range jobs {
+		mo.jobSources.Delete(job.ID)
 		if err := mo.connectorManager.RemoveJobFromDataSource(job.SourceID, job.ID); err != nil {
 			log.Printf("MultiOrchestrator: %v", err)
 		}
@@ -271,7 +272,11 @@ func (mo *MultiOrchestrator) ApplyConfiguration(ctx context.Context, newCfg *con
 		if cp, ok := stoppedCps[jobCfg.ID]; ok && sameSourceIdentity(oldSources, newSources, jobCfg.SourceID, cp) {
 			resume = cp
 		}
-		job, err := mo.createJob(jobCfg, resume)
+		var added []string
+		if stopped[jobCfg.ID] {
+			added = addedTables(oldSources, newSources, jobCfg.SourceID)
+		}
+		job, err := mo.createJob(jobCfg, resume, added)
 		if err != nil {
 			report.Failed["job:"+jobCfg.ID] = err.Error()
 			log.Printf("⚠️  MultiOrchestrator: Failed to start job '%s': %v", jobCfg.ID, err)
@@ -301,6 +306,15 @@ func (mo *MultiOrchestrator) ApplyConfiguration(ctx context.Context, newCfg *con
 	return report, nil
 }
 
+// JobSourceID returns the data source ID of a job that has not fully stopped.
+func (mo *MultiOrchestrator) JobSourceID(jobID string) (string, bool) {
+	v, ok := mo.jobSources.Load(jobID)
+	if !ok {
+		return "", false
+	}
+	return v.(string), true
+}
+
 // sameSourceIdentity reports whether a checkpoint taken against the old data
 // source is still meaningful for the new one (same server and database).
 func sameSourceIdentity(oldSources, newSources map[string]config.DataSourceConfig, sourceID string, cp *pb.Checkpoint) bool {
@@ -310,6 +324,27 @@ func sameSourceIdentity(oldSources, newSources map[string]config.DataSourceConfi
 		return false
 	}
 	return o.Type == n.Type && o.Host == n.Host && o.Port == n.Port && o.Database == n.Database
+}
+
+// addedTables returns the table filters the new data source has and the old one
+// lacked, provided both point at the same database. An empty old filter list is
+// treated as covering every table.
+func addedTables(oldSources, newSources map[string]config.DataSourceConfig, sourceID string) []string {
+	o, ok1 := oldSources[sourceID]
+	n, ok2 := newSources[sourceID]
+	if !ok1 || !ok2 || len(o.TableFilters) == 0 {
+		return nil
+	}
+	if o.Type != n.Type || o.Host != n.Host || o.Port != n.Port || o.Database != n.Database {
+		return nil
+	}
+	var added []string
+	for _, t := range n.TableFilters {
+		if !contains(o.TableFilters, t) && !contains(added, t) {
+			added = append(added, t)
+		}
+	}
+	return added
 }
 
 func contains(list []string, s string) bool {

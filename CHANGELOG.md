@@ -25,6 +25,69 @@
 
 ---
 
+## [v1.5.2] - 2026-11-19
+
+Hot reload, multi-source routing, MongoDB snapshot safety, and checkpoint persistence fixes. Builds on Nacos / configuration apply from v1.5.0; no new CLI flags.
+
+### 🐛 Bug Fixes
+
+#### 1. Nacos Hot Reload: New Collections in `table_filters` Not Indexed in Elasticsearch (`internal/orchestrator/apply.go`, `internal/orchestrator/multi_orchestrator.go`)
+
+- **Issue**: in Nacos mode, adding a collection (or table) to an existing data source's `table_filters` triggered configuration hot reload correctly (data source re-registered, jobs restarted, CDC filter updated), but **initial sync was skipped** for the whole job because a checkpoint already existed or Elasticsearch already had data from the old collections. New collections therefore had no full snapshot and no ES index until a post-reload write occurred
+- **Fix**:
+  - On `SourcesChanged`, compare old and new `table_filters` and pass **added** names to restarted jobs
+  - When full initial sync is skipped but new names were added, run a **serial snapshot only for those names**, then resume CDC from the previous resume token / binlog / LSN
+  - Snapshot chunks do not overwrite the job checkpoint during this partial sync (`preserveCheckpoint`), avoiding gaps on other collections (PostgreSQL WAL / MongoDB resume token)
+- **Workaround before this fix**: set `force_initial_sync: true` on the job temporarily, or insert a document into the new collection to let CDC create the index (existing data would still be missing)
+- MySQL, PostgreSQL and MongoDB benefit from the same added-table logic when `table_filters` grows on the same database
+
+#### 2. MongoDB Full Snapshot Dropped CDC Events (`internal/connectors/mongodb/mongodb.go`, `internal/orchestrator/multi_orchestrator.go`)
+
+- **Issue**: unlike MySQL (binlog position) and PostgreSQL (LSN), MongoDB snapshot chunks carry no source position. CDC started at the **current** change stream position after the snapshot finished, so **all writes during the snapshot were permanently lost** (worse on large collections)
+- **Fix**:
+  - Before any MongoDB snapshot (full initial sync or added-table sync after reload), call `Connector.CurrentResumeToken()` and store it on the job
+  - CDC then uses `resumeAfter` from that token; events during the snapshot are replayed and applied idempotently by `_id`
+  - Requires a replica set or sharded cluster with change streams (MongoDB 4.0.7+ for resume token on stream open)
+- If capturing the token fails, initial sync aborts; added-table snapshot is skipped but CDC still starts (logged)
+
+#### 3. In-Process Connector Service Routed All Jobs to the First Data Source (`cmd/elasticrelay/services.go`, `cmd/elasticrelay/main.go`, `internal/orchestrator/apply.go`)
+
+- **Issue**: serial `BeginSnapshot`, `StartCdc`, `CommitCheckpoint` and `LoadCheckpoint` always hit the **first** data source in configuration. Multi-source deployments could snapshot the wrong database (silent data corruption when two MongoDB sources share collection names) or fail (e.g. MySQL server backing a MongoDB job)
+- **Fix**:
+  - Maintain one in-process connector server **per data source**; route requests by job ID → source ID (`MultiOrchestrator.JobSourceID`)
+  - Rebuild only servers whose configuration changed on hot reload; unregister removed sources
+  - If a job's source has no server, return `Unavailable` instead of falling back to the first source
+  - Shared checkpoint file locks per connector package when multiple servers of the same type write the same file
+
+#### 4. Persisted Checkpoints Ignored After Process Restart (`internal/connectors/persist_checkpoint.go`, `internal/connectors/mongodb/pb_checkpoint.go`, `internal/orchestrator/multi_orchestrator.go`, connector servers)
+
+- **Issue**:
+  - Jobs started with `resumeCp == nil` after restart and never loaded on-disk checkpoints before CDC
+  - `hasValidCheckpoint` only read `checkpoints.json`, while MongoDB commits to `mongodb_checkpoints.json` and PostgreSQL to `postgresql_checkpoints.json`, so MongoDB/PostgreSQL jobs misjudged sync state
+  - MongoDB had no `CheckpointManager` implementation in the orchestrator (TODO)
+  - PostgreSQL `loadCheckpoint` unmarshalled the file as `pb.Checkpoint` although `CommitCheckpoint` stored `LSNCheckpoint` JSON
+  - `LoadCheckpoint` gRPC was not implemented on connector servers (only defined in proto)
+- **Fix**:
+  - `LoadPersistedCheckpoint(jobID, sourceType)` reads the correct file and normalizes PostgreSQL LSN into `pb.Checkpoint`
+  - `createJob` loads and validates a persisted checkpoint when no in-memory resume is passed (cold start / process restart)
+  - `hasValidCheckpoint` uses the same loader
+  - Implement `MongoDBCheckpointManager` and `LoadCheckpoint` on MySQL, MongoDB and PostgreSQL servers; fix PostgreSQL disk read path
+
+### ⚠️ Upgrade Notes
+
+- Recommended for **Nacos + MongoDB** deployments that expand `table_filters` at runtime, and for **multi-source** configurations (more than one entry in `data_sources`)
+- After upgrading, the **first** MongoDB full sync or added-collection sync on a running job may log `CDC will resume from the change stream position taken before the snapshot`; this is expected and closes the historical snapshot gap
+- Collections added under v1.5.1 or earlier without a manual resync may still lack historical documents in Elasticsearch; trigger added-table snapshot by republishing `table_filters` in Nacos, or use `force_initial_sync: true` once
+
+### ✅ Verification
+
+- `TestApplyConfigurationPassesAddedTablesToRestartedJob`, `TestAddedTables`, `TestJobSourceIDFollowsJobLifecycle` (orchestrator hot reload)
+- `TestSwappableConnectorRoutesByJobSource`, `TestSyncSourceConnectors` (`cmd/elasticrelay/services_test.go`)
+- `TestLoadPersistedCheckpointBySourceType` (`internal/connectors/persist_checkpoint_test.go`), `TestMongoDBCheckpointManagerIsValid`
+- Log markers: `Snapshotting N table(s) added by configuration reload`, `Loaded persisted checkpoint for job`, `Resuming MongoDB CDC from resume token`
+
+---
+
 ## [v1.5.0] - 2026-11-11
 
 ### ✨ New Feature: Nacos Config Center and Configuration Hot Reload

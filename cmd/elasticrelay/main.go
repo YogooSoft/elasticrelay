@@ -189,6 +189,10 @@ func runMulti(opts *config.Options, port string) {
 		log.Fatalf("failed to create %s connector server for multi-config: %v", firstDataSource(multiCfg).Type, err)
 	}
 	services.connector.set(connectorServer)
+	services.connector.setJobSourceResolver(orchServer.JobSourceID)
+	if err := services.syncSourceConnectors(nil, multiCfg); err != nil {
+		log.Fatalf("failed to create connector servers for data sources: %v", err)
+	}
 
 	manager := config.NewConfigManager(source, &orchestratorApplier{orch: orchServer, services: services}, config.ManagerOptions{
 		Debounce:  opts.Debounce,

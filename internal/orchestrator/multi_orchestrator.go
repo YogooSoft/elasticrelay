@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -42,7 +41,10 @@ type MultiOrchestrator struct {
 	connectorManager *connectors.ConnectorManager
 	jobs             map[string]*MultiJob
 	jobsMux          sync.RWMutex
-	multiConfig      *config.MultiConfig
+	// jobSources maps job ID to data source ID until the job has fully stopped,
+	// so a job's final checkpoint commit can still be routed to its source.
+	jobSources  sync.Map
+	multiConfig *config.MultiConfig
 	grpcAddress      string // Address of the gRPC server where all services are running
 
 	// Service clients (shared across jobs)
@@ -86,6 +88,13 @@ type MultiJob struct {
 	resumeCp   *pb.Checkpoint
 	grpcAddr   string
 	parallelDB *sql.DB
+
+	// addedTables are tables added to the source by a configuration reload; they
+	// are snapshotted before CDC resumes when the full initial sync is skipped.
+	addedTables []string
+	// preserveCheckpoint keeps snapshot chunks from moving the job checkpoint,
+	// because a partial snapshot must not skip CDC events of the other tables.
+	preserveCheckpoint bool
 
 	// Job-specific clients
 	connectorInstance *connectors.ConnectorInstance
@@ -310,7 +319,7 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 		return nil, fmt.Errorf("failed to parse job config: %w", err)
 	}
 
-	job, err := mo.createJob(jobConfig, nil)
+	job, err := mo.createJob(jobConfig, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -324,8 +333,9 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 }
 
 // createJob creates, registers and (if enabled) starts a job. resumeCp, when
-// set, is the in-memory checkpoint of a previous incarnation of the same job.
-func (mo *MultiOrchestrator) createJob(jobConfig config.SyncJobConfig, resumeCp *pb.Checkpoint) (*MultiJob, error) {
+// set, is the in-memory checkpoint of a previous incarnation of the same job;
+// addedTables are source tables that incarnation did not sync yet.
+func (mo *MultiOrchestrator) createJob(jobConfig config.SyncJobConfig, resumeCp *pb.Checkpoint, addedTables []string) (*MultiJob, error) {
 	jobID := jobConfig.ID
 	if jobID == "" {
 		jobID = fmt.Sprintf("job-%d", time.Now().UnixNano())
@@ -342,6 +352,14 @@ func (mo *MultiOrchestrator) createJob(jobConfig config.SyncJobConfig, resumeCp 
 	connectorInstance, err := mo.connectorManager.GetConnector(jobConfig.SourceID)
 	if err != nil {
 		return nil, fmt.Errorf("source not found: %w", err)
+	}
+
+	if resumeCp == nil && connectorInstance.Config != nil {
+		if cp, err := connectors.LoadPersistedCheckpoint(jobID, connectorInstance.Config.Type); err == nil &&
+			connectors.IsValidPersistedCheckpoint(cp, connectorInstance.Config.Type) {
+			resumeCp = cp
+			log.Printf("MultiOrchestrator: Loaded persisted checkpoint for job '%s'", jobID)
+		}
 	}
 
 	sinkClient, exists := mo.sinkClients[jobConfig.SinkID]
@@ -386,6 +404,7 @@ func (mo *MultiOrchestrator) createJob(jobConfig config.SyncJobConfig, resumeCp 
 		procDone:          make(chan struct{}),
 		drainCh:           make(chan struct{}),
 		resumeCp:          resumeCp,
+		addedTables:       addedTables,
 		grpcAddr:          mo.grpcAddress,
 		connectorInstance: connectorInstance,
 		sinkClient:        sinkClient,
@@ -397,8 +416,11 @@ func (mo *MultiOrchestrator) createJob(jobConfig config.SyncJobConfig, resumeCp 
 		dlqManager:        mo.dlqManager,     // Share DLQ manager from orchestrator
 		cdcEvents:         make(chan *pb.ChangeEvent, batchSize*20),
 	}
-	if resumeCp != nil && resumeCp.PostgresLsn != "" {
-		job.lastCp = resumeCp
+	if resumeCp != nil {
+		if resumeCp.PostgresLsn != "" || resumeCp.MongoResumeToken != "" ||
+			(resumeCp.MysqlBinlogFile != "" && resumeCp.MysqlBinlogPos > 0) {
+			job.lastCp = resumeCp
+		}
 	}
 
 	// Initialize parallel snapshot manager if enabled
@@ -411,6 +433,7 @@ func (mo *MultiOrchestrator) createJob(jobConfig config.SyncJobConfig, resumeCp 
 	}
 
 	mo.jobs[jobID] = job
+	mo.jobSources.Store(jobID, job.SourceID)
 
 	// Register job with connector manager
 	mo.connectorManager.AddJobToDataSource(jobConfig.SourceID, jobID)
@@ -468,12 +491,22 @@ func (j *MultiJob) run() {
 
 	// Check if initial sync is enabled and needed
 	if j.needsInitialSync() {
+		if err := j.captureSnapshotStartPosition(); err != nil {
+			log.Printf("MultiJob '%s': Initial sync failed: %v", j.ID, err)
+			return
+		}
 		log.Printf("MultiJob '%s': Starting initial snapshot sync", j.ID)
 		if err := j.performInitialSync(); err != nil {
 			log.Printf("MultiJob '%s': Initial sync failed: %v", j.ID, err)
 			return
 		}
 		log.Printf("MultiJob '%s': Initial sync completed successfully", j.ID)
+	} else if len(j.addedTables) > 0 && j.isInitialSyncEnabledInConfig() {
+		if err := j.captureSnapshotStartPosition(); err != nil {
+			log.Printf("❌ MultiJob '%s': Skipping snapshot of added tables %v: %v", j.ID, j.addedTables, err)
+		} else {
+			j.syncAddedTables()
+		}
 	}
 
 	// Start CDC stream for incremental changes
@@ -552,7 +585,7 @@ func (j *MultiJob) startCDC() {
 		var resume *pb.Checkpoint
 		if j.resumeCp != nil && j.resumeCp.MongoResumeToken != "" {
 			resume = j.resumeCp
-			log.Printf("MultiJob '%s': Resuming MongoDB CDC after configuration reload", j.ID)
+			log.Printf("MultiJob '%s': Resuming MongoDB CDC from resume token", j.ID)
 		}
 		err := connector.Start(stream, resume)
 		if err != nil {
@@ -1029,9 +1062,7 @@ func (j *MultiJob) getCheckpointManager() connectors.CheckpointManager {
 	case "postgresql":
 		return postgresql.NewPostgreSQLCheckpointManager()
 	case "mongodb":
-		// TODO: Implement MongoDB checkpoint manager
-		log.Printf("MultiJob '%s': MongoDB checkpoint manager not yet implemented", j.ID)
-		return nil
+		return mongodb.NewMongoDBCheckpointManager()
 	default:
 		log.Printf("MultiJob '%s': Unknown connector type '%s'", j.ID, j.connectorInstance.Config.Type)
 		return nil
@@ -1040,16 +1071,12 @@ func (j *MultiJob) getCheckpointManager() connectors.CheckpointManager {
 
 // hasValidCheckpoint checks if a valid checkpoint exists for this job using the new CheckpointManager interface
 func (j *MultiJob) hasValidCheckpoint() bool {
-	// Load checkpoints from file
-	checkpoints, err := j.loadCheckpointsFromFile()
-	if err != nil {
-		log.Printf("MultiJob '%s': Cannot load checkpoints file: %v", j.ID, err)
+	if j.connectorInstance == nil || j.connectorInstance.Config == nil {
 		return false
 	}
-
-	cp, exists := checkpoints[j.ID]
-	if !exists {
-		log.Printf("MultiJob '%s': No checkpoint found in file", j.ID)
+	cp, err := connectors.LoadPersistedCheckpoint(j.ID, j.connectorInstance.Config.Type)
+	if err != nil {
+		log.Printf("MultiJob '%s': No persisted checkpoint: %v", j.ID, err)
 		return false
 	}
 
@@ -1099,25 +1126,6 @@ func (j *MultiJob) hasValidCheckpointLegacy(cp *pb.Checkpoint) bool {
 
 	log.Printf("MultiJob '%s': No valid checkpoint data found", j.ID)
 	return false
-}
-
-// loadCheckpointsFromFile loads checkpoints directly from the JSON file
-func (j *MultiJob) loadCheckpointsFromFile() (map[string]*pb.Checkpoint, error) {
-	const checkpointFilePath = "checkpoints.json"
-
-	data, err := os.ReadFile(checkpointFilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return make(map[string]*pb.Checkpoint), nil
-		}
-		return nil, fmt.Errorf("failed to read checkpoints file: %w", err)
-	}
-
-	var checkpoints map[string]*pb.Checkpoint
-	if err := json.Unmarshal(data, &checkpoints); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal checkpoints: %w", err)
-	}
-	return checkpoints, nil
 }
 
 // targetSystemHasData checks if the target Elasticsearch already has data for this job
@@ -1351,6 +1359,40 @@ func (j *MultiJob) performSerialInitialSync(tables []string) error {
 	}
 
 	return nil
+}
+
+// captureSnapshotStartPosition makes a MongoDB job without a resume token start
+// CDC from the moment before its snapshot. Unlike MySQL and PostgreSQL, MongoDB
+// snapshot chunks carry no source position, so without this every change made
+// during the snapshot would be lost.
+func (j *MultiJob) captureSnapshotStartPosition() error {
+	connector, ok := j.connectorInstance.Connector.(*mongodb.Connector)
+	if !ok || (j.resumeCp != nil && j.resumeCp.MongoResumeToken != "") {
+		return nil
+	}
+	token, err := connector.CurrentResumeToken(j.ctx)
+	if err != nil {
+		return fmt.Errorf("failed to capture MongoDB change stream position before snapshot: %w", err)
+	}
+	j.resumeCp = &pb.Checkpoint{SourceType: j.SourceID, MongoResumeToken: token}
+	log.Printf("MultiJob '%s': CDC will resume from the change stream position taken before the snapshot", j.ID)
+	return nil
+}
+
+// syncAddedTables snapshots tables added by a configuration reload. CDC then
+// resumes from the previous checkpoint, so changes made during the snapshot are
+// replayed and applied idempotently by primary key. A failure is logged and CDC
+// still starts, so the tables that were already synced keep flowing.
+func (j *MultiJob) syncAddedTables() {
+	log.Printf("MultiJob '%s': Snapshotting %d table(s) added by configuration reload: %v", j.ID, len(j.addedTables), j.addedTables)
+	j.preserveCheckpoint = true
+	defer func() { j.preserveCheckpoint = false }()
+
+	if err := j.performSerialInitialSync(j.addedTables); err != nil {
+		log.Printf("❌ MultiJob '%s': Snapshot of added tables failed: %v (they will receive CDC changes only; set force_initial_sync to resync)", j.ID, err)
+		return
+	}
+	log.Printf("MultiJob '%s': Snapshot of added tables completed", j.ID)
 }
 
 // monitorParallelProgress monitors the progress of parallel sync
@@ -1624,7 +1666,7 @@ func (j *MultiJob) processSnapshotChunk(chunk *pb.SnapshotChunk, tableName strin
 		}
 
 		// Update checkpoint after successful snapshot chunk
-		if len(transformedEvents) > 0 {
+		if len(transformedEvents) > 0 && !j.preserveCheckpoint {
 			lastEvent := transformedEvents[len(transformedEvents)-1]
 			j.updateCheckpoint(lastEvent.Checkpoint)
 			j.commitCheckpoint()

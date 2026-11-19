@@ -174,6 +174,82 @@ func TestApplyConfigurationRetriesMissingJobs(t *testing.T) {
 	}
 }
 
+func TestApplyConfigurationPassesAddedTablesToRestartedJob(t *testing.T) {
+	cfg := applyTestConfig()
+	cfg.DataSources[0] = config.DataSourceConfig{ID: "src-a", Type: "mongodb", Host: "127.0.0.1", Port: 27017, Database: "d",
+		TableFilters: []string{"users"}}
+	mo := newTestOrchestrator(t, cfg)
+
+	newCfg := applyTestConfig()
+	newCfg.DataSources[0] = cfg.DataSources[0]
+	newCfg.DataSources[0].TableFilters = []string{"users", "orders"}
+	if _, err := mo.ApplyConfiguration(context.Background(), newCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mo.jobsMux.RLock()
+	defer mo.jobsMux.RUnlock()
+	for _, id := range []string{"job-a", "job-keep"} {
+		if got := mo.jobs[id].addedTables; !reflect.DeepEqual(got, []string{"orders"}) {
+			t.Fatalf("%s added tables = %v", id, got)
+		}
+	}
+	if got := mo.jobs["job-b"].addedTables; got != nil {
+		t.Fatalf("job on unchanged source must not get added tables: %v", got)
+	}
+}
+
+func TestJobSourceIDFollowsJobLifecycle(t *testing.T) {
+	mo := newTestOrchestrator(t, applyTestConfig())
+	if src, ok := mo.JobSourceID("job-b"); !ok || src != "src-b" {
+		t.Fatalf("JobSourceID(job-b) = %q, %v", src, ok)
+	}
+
+	newCfg := applyTestConfig()
+	newCfg.Jobs = newCfg.Jobs[:1]
+	if _, err := mo.ApplyConfiguration(context.Background(), newCfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mo.JobSourceID("job-b"); ok {
+		t.Fatal("removed job must not resolve to a data source")
+	}
+	if src, ok := mo.JobSourceID("job-a"); !ok || src != "src-a" {
+		t.Fatalf("JobSourceID(job-a) = %q, %v", src, ok)
+	}
+}
+
+func TestAddedTables(t *testing.T) {
+	base := config.DataSourceConfig{ID: "s", Type: "mongodb", Host: "h", Port: 1, Database: "d", TableFilters: []string{"a", "b"}}
+	with := func(f func(*config.DataSourceConfig)) config.DataSourceConfig {
+		ds := base
+		ds.TableFilters = append([]string{}, base.TableFilters...)
+		f(&ds)
+		return ds
+	}
+	tests := []struct {
+		name string
+		old  config.DataSourceConfig
+		new  config.DataSourceConfig
+		want []string
+	}{
+		{"added", base, with(func(d *config.DataSourceConfig) { d.TableFilters = []string{"a", "c", "b", "d", "c"} }), []string{"c", "d"}},
+		{"removed only", base, with(func(d *config.DataSourceConfig) { d.TableFilters = []string{"a"} }), nil},
+		{"old covers all", with(func(d *config.DataSourceConfig) { d.TableFilters = nil }), base, nil},
+		{"other database", base, with(func(d *config.DataSourceConfig) { d.Database = "x"; d.TableFilters = []string{"a", "c"} }), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := addedTables(map[string]config.DataSourceConfig{"s": tt.old}, map[string]config.DataSourceConfig{"s": tt.new}, "s")
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+	if got := addedTables(nil, map[string]config.DataSourceConfig{"s": base}, "s"); got != nil {
+		t.Fatalf("new source must not report added tables: %v", got)
+	}
+}
+
 type recordingSink struct {
 	mu     sync.Mutex
 	events []*pb.ChangeEvent

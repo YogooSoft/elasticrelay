@@ -2,10 +2,8 @@ package postgresql
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -635,11 +633,13 @@ func (c *Connector) buildLegacyConfig() *config.Config {
 	}
 }
 
+// checkpointFileMu guards checkpointFilePath, which every Server writes.
+var checkpointFileMu sync.RWMutex
+
 // Server implements the ConnectorService for PostgreSQL
 type Server struct {
 	pb.UnimplementedConnectorServiceServer
-	config          *config.Config
-	checkpointMutex sync.RWMutex
+	config *config.Config
 }
 
 // NewServer creates a new PostgreSQL connector server
@@ -753,6 +753,9 @@ func (s *Server) CommitCheckpoint(ctx context.Context, req *pb.CommitCheckpointR
 		return nil, fmt.Errorf("commit request has no checkpoint")
 	}
 
+	checkpointFileMu.Lock()
+	defer checkpointFileMu.Unlock()
+
 	// Checkpoints are persisted to the local checkpoint file and do not require a DB pool.
 	lsnManager := NewLSNManager(nil, checkpointFilePath)
 
@@ -771,36 +774,28 @@ func (s *Server) CommitCheckpoint(ctx context.Context, req *pb.CommitCheckpointR
 	return &pb.CommitCheckpointResponse{Success: true}, nil
 }
 
-// loadCheckpoint loads a checkpoint for a specific job
-func (s *Server) loadCheckpoint(jobId string) (*pb.Checkpoint, error) {
-	s.checkpointMutex.RLock()
-	defer s.checkpointMutex.RUnlock()
+// LoadCheckpoint implements the gRPC service endpoint.
+func (s *Server) LoadCheckpoint(ctx context.Context, req *pb.LoadCheckpointRequest) (*pb.LoadCheckpointResponse, error) {
+	cp, err := s.loadCheckpoint(req.JobId)
+	if err != nil {
+		return &pb.LoadCheckpointResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &pb.LoadCheckpointResponse{Success: true, Checkpoint: cp}, nil
+}
 
-	checkpoints, err := s.loadAllCheckpoints()
+// loadCheckpoint loads a checkpoint for a specific job.
+func (s *Server) loadCheckpoint(jobId string) (*pb.Checkpoint, error) {
+	checkpointFileMu.RLock()
+	defer checkpointFileMu.RUnlock()
+
+	lsnManager := NewLSNManager(nil, checkpointFilePath)
+	stored, err := lsnManager.LoadCheckpoint(jobId)
 	if err != nil {
 		return nil, err
 	}
-
-	cp, ok := checkpoints[jobId]
-	if !ok {
-		return nil, fmt.Errorf("no checkpoint found for job ID: %s", jobId)
-	}
-	return cp, nil
-}
-
-// loadAllCheckpoints loads all checkpoints from file
-func (s *Server) loadAllCheckpoints() (map[string]*pb.Checkpoint, error) {
-	data, err := os.ReadFile(checkpointFilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return make(map[string]*pb.Checkpoint), nil
-		}
-		return nil, fmt.Errorf("failed to read checkpoints file: %w", err)
-	}
-
-	var checkpoints map[string]*pb.Checkpoint
-	if err := json.Unmarshal(data, &checkpoints); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal checkpoints: %w", err)
-	}
-	return checkpoints, nil
+	return &pb.Checkpoint{
+		SourceType:  "postgresql",
+		PostgresLsn: stored.LSN,
+		Position:    stored.LSN,
+	}, nil
 }

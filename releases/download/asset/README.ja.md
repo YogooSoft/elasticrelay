@@ -3,7 +3,7 @@
 ![ElasticRelay Screenshot](/releases/download/asset/screenshot_02.png)
 
 <p align="center">
-  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.4.4-blue.svg" alt="バージョン"></a>
+  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.5.2-blue.svg" alt="バージョン"></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/go-1.25.2+-00ADD8.svg" alt="Go バージョン"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="ライセンス"></a>
 </p>
@@ -20,22 +20,37 @@
 
 ElasticRelay は、主要な OLTP データベース（MySQL、PostgreSQL、MongoDB）から Elasticsearch へのリアルタイム Change Data Capture (CDC) を提供するために設計された、シームレスで異種データ同期ツールです。Logstash や Flink などの既存のソリューションよりも使いやすく、信頼性が高いことを目指しています。
 
-## 🎉 v1.4.4 ハイライト - 本番対応 CDC プラットフォーム（Transform Engine 搭載）
+## 🎉 v1.5.2 ハイライト — ホットリロード・チェックポイント・マルチソース
 
-**3つの主要データベースソース + エンタープライズ向けデータ変換:**
+**最新リリース（詳細は [CHANGELOG.md](../../../CHANGELOG.md)）：**
+
+| 領域 | v1.5.2 |
+|------|--------|
+| **Nacos `table_filters`** | 追加テーブル/コレクションのみ **スナップショット**、その後保存済みチェックポイントから CDC 再開 |
+| **MongoDB スナップショット** | 同期前に **resume token** を記録し、スナップショット中の書き込みを欠落させない |
+| **マルチソース** | データソースごとの in-process コネクタ、ジョブ単位のルーティング |
+| **チェックポイント** | 再起動時に各エンジン用 JSON ファイルから読み込み |
+
+**v1.5.1:** PostgreSQL `REPLICA IDENTITY FULL` 時の ES `_id` を実主キーに固定（更新時の重複ドキュメントを防止）。
+
+## v1.5.0 — Nacos 設定センター & ホットリロード
+
+**3大 DB + 変換エンジン + 集中設定:**
 
 | ソース | ステータス | 機能 |
 |--------|--------|----------|
 | **MySQL** | ✅ 完了 | Binlog CDC + 初期同期 + 並列スナップショット |
-| **PostgreSQL** | ✅ 本番強化済み | 論理レプリケーション + WAL パース + 安定したスナップショットから CDC へのハンドオフ |
-| **MongoDB** | ✅ 完了 | Change Streams + シャードクラスター + Resume Tokens |
-| **Transform Engine** | ✅ 完了 | フィールドマッピング + データマスキング + 型変換 + 式エンジン |
+| **PostgreSQL** | ✅ 本番強化済み | 論理レプリケーション + WAL + 安定したスナップショット→CDC |
+| **MongoDB** | ✅ 完了 | Change Streams + シャード + Resume Tokens |
+| **Transform Engine** | ✅ 完了 | フィールドマッピング + マスキング + 型変換 + 式 |
+| **Config Center** | 🆕 新規 | Nacos / ローカルファイル + 自動ホットリロード + diff 適用 |
 
 ## 主な機能
 
 - **マルチソース CDC**: MySQL、PostgreSQL、MongoDB のリアルタイム変更キャプチャを完全サポート
 - **Transform Engine**: フィールドマッピング、データマスキング（電話番号、身分証明書、メール、銀行カード）、型変換、式評価、条件フィルタリングによるエンタープライズグレードのデータ変換 — 800,000+ ops/sec の処理性能
 - **ゼロコード設定**: ウィザードスタイルの GUI を備えた JSON ベースの設定（開発中）
+- **Config Center & ホットリロード**: ローカルファイル（既定）または Nacos。プロセス再起動なしで変更適用（v1.5.0+）
 - **マルチテーブル動的インデックス作成**: 設定可能な命名パターンで、各ソーステーブルに個別の Elasticsearch インデックスを自動作成（例: `elasticrelay-users`、`elasticrelay-orders`）
 - **組み込みガバナンス**: データ構造化、匿名化、型変換、正規化、エンリッチメントを処理
 - **デフォルトで信頼性**: トランザクションログレベルの CDC、再開のための正確なチェックポイント、データ整合性を確保するための冪等書き込みを活用
@@ -68,7 +83,8 @@ ElasticRelay は、主要な OLTP データベース（MySQL、PostgreSQL、Mong
 - **ES シンクライター**: 自動インデックス管理付きで Elasticsearch に効率的なバッチでデータを書き込み。
 - **オーケストレーター**: レガシー単一ソースとマルチソース設定の両方をサポートし、同期タスクのライフサイクルを管理。
 - **Dead Letter Queue**: 指数バックオフリトライと永続ストレージによる失敗イベントの処理。
-- **チェックポイントマネージャー**: フォールトトレラントな再開のための永続的位置追跡（binlog 位置、PostgreSQL LSN、MongoDB resume token）。
+- **チェックポイントマネージャー**: エンジン別ファイル（`checkpoints.json` 等）；プロセス/ジョブ再起動時に読み込み（v1.5.2+）。
+- **設定マネージャー**: ローカルまたは Nacos、検証と diff 適用（v1.5.0+）。
 - **コントロールプレーン**: UI と設定管理バックエンド（開発中）。
 
 ## クイックスタート
@@ -317,6 +333,28 @@ ElasticRelay は、レガシーの単一設定と自動検出・移行付きの�
 - `orders` テーブル用の `elasticrelay-orders`  
 - `products` テーブル用の `elasticrelay-products`
 
+### 設定ソースとホットリロード
+
+マルチソース設定（2.0 / 3.0）を **ローカルファイル**（既定）または **Nacos** から読み込み。`--config-source=nacos`、`NACOS_*`、`nacos_publish.sh`。全オプションは `elasticrelay.env.example` と [README.md](/README.md)。
+
+#### ホットリロード（v1.5.2+）
+
+| 変更 | 効果 |
+|------|------|
+| データソース / Sink | 依存ジョブを再起動 |
+| 同一 DB で `table_filters` 追加 | **追加分のみ**スナップショット後 CDC |
+| Transform ルール | 即時反映 |
+
+**マルチソース (v1.5.2+)：** ジョブの `source_id` へルーティング。
+
+#### チェックポイントファイル
+
+| ソース | ファイル |
+|--------|----------|
+| MySQL | `checkpoints.json` |
+| PostgreSQL | `postgresql_checkpoints.json` |
+| MongoDB | `mongodb_checkpoints.json` |
+
 ### Dead Letter Queue (DLQ) サポート
 
 ElasticRelay には、失敗したイベントを処理するための包括的な DLQ システムが含まれています:
@@ -338,6 +376,7 @@ ElasticRelay は高度な機能を備えた包括的な PostgreSQL CDC 機能を
 - **レプリケーションスロット**: 論理レプリケーションスロットの自動作成と管理
 - **パブリケーション**: テーブルフィルタリングのための動的パブリケーション管理
 - **LSN 管理**: チェックポイント/再開機能のための正確な Log Sequence Number 追跡
+- **ドキュメント ID (v1.5.1+)**: `REPLICA IDENTITY FULL` 時、ES `_id` は `pg_index` の実主キー
 
 #### 高度な PostgreSQL 機能
 - **コネクションプーリング**: 設定可能な制限を持つインテリジェントなコネクションプール管理
@@ -379,8 +418,13 @@ ElasticRelay は Change Streams を使用した完全な MongoDB CDC 機能を�
 #### コア MongoDB 機能
 - **Change Streams**: MongoDB のネイティブ Change Streams API を使用したリアルタイム CDC
 - **クラスターサポート**: レプリカセットとシャードクラスターの自動検出とサポート
-- **Resume Tokens**: チェックポイント/再開機能のための永続的な resume token 管理
+- **Resume Tokens**: `mongodb_checkpoints.json` に永続化（v1.5.2+）
+- **スナップショット安全 CDC (v1.5.2+)**: スナップショット前に resume token を記録
 - **操作マッピング**: INSERT、UPDATE、REPLACE、DELETE 操作の完全サポート
+
+#### Nacos / `table_filters` (v1.5.2+)
+
+Nacos でコレクション追加時は新規分のみスナップショット。ログ: `Snapshotting N table(s) added by configuration reload`。
 
 #### 高度な MongoDB 機能
 - **シャードクラスターサポート**: 
@@ -526,11 +570,11 @@ round($.price * $.quantity, 2)
 
 ## 現在のステータス
 
-**現在のバージョン**: v1.4.4 | **フェーズ**: フェーズ 2 完了 ✅、フェーズ 3 進行中（Transform Engine 完了）
+**現在のバージョン**: v1.5.2 | **フェーズ**: フェーズ 2 完了 ✅、フェーズ 3 進行中（Transform & Config Center 完了）
 
-このプロジェクトはコアとなるマルチソース CDC プラットフォーム（フェーズ 2）を完了し、Transform Engine をフェーズ 3 の最初の主要マイルストーンとして提供しました。PostgreSQL CDC は広範な安定性修正により本番向けに強化されています。
+v1.5.1–v1.5.2: PostgreSQL ドキュメント ID、Nacos `table_filters`、MongoDB スナップショット安全性、マルチソースルーティング、永続チェックポイント。
 
-### ✅ 完了した機能（v1.4.4）
+### ✅ 完了した機能（v1.5.2 まで）
 - **マルチソース CDC パイプライン**: 
   - **MySQL CDC**: binlog ベースのリアルタイム同期による完全な実装、一貫した日時処理
   - **PostgreSQL CDC**: WAL パース、レプリケーションスロット、パブリケーション、安定したスナップショットから CDC へのハンドオフ、非同期バッチ分離、ジョブスコープのレプリケーションスロット管理を備えた本番強化された論理レプリケーション
@@ -547,10 +591,11 @@ round($.price * $.quantity, 2)
 - **gRPC アーキテクチャ**: 完全なサービス定義と実装（Connector、Orchestrator、Sink、Transform、Health）
 - **高度な設定管理**: 
   - レガシー移行サポート付きのマルチソース設定システム
-  - 設定同期とホットリロード機能
+  - Nacos / ローカルファイル、ホットリロード、追加 `table_filters` のスナップショット (v1.5.2+)
   - 自動フォーマット検出と移行ツール
 - **Elasticsearch 統合**: 自動インデックス管理とデータクリーニング付きの高性能バルク書き込み
-- **チェックポイント/再開**: 自動復旧によるフォールトトレランスのための永続的位置追跡（binlog、LSN、resume tokens）
+- **チェックポイント/再開**: エンジン別ファイル、再起動時読み込み、MongoDB 事前 token (v1.5.2+)
+- **マルチソース in-process ルーティング (v1.5.2+)**
 - **Dead Letter Queue (DLQ)**: 
   - 指数バックオフリトライ付きの包括的な DLQ システム（設定可能な最大リトライ回数）
   - 重複排除とステータス追跡付きの永続ストレージ

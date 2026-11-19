@@ -3,7 +3,7 @@
 ![ElasticRelay Screenshot](releases/download/asset/screenshot_02.png)
 
 <p align="center">
-  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.5.0-blue.svg" alt="Version"></a>
+  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.5.2-blue.svg" alt="Version"></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/go-1.25.2+-00ADD8.svg" alt="Go Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License"></a>
 </p>
@@ -19,7 +19,20 @@
 
 ElasticRelay is a seamless, heterogeneous data synchronizer designed to provide real-time Change Data Capture (CDC) from major OLTP databases (MySQL, PostgreSQL, MongoDB) to Elasticsearch. It aims to be more user-friendly and reliable than existing solutions like Logstash or Flink.
 
-## 🎉 v1.5.0 Highlights - Nacos Config Center & Configuration Hot Reload
+## 🎉 v1.5.2 Highlights — Hot Reload, Checkpoints & Multi-Source
+
+**Recent release (see [CHANGELOG.md](CHANGELOG.md) for full notes):**
+
+| Area | v1.5.2 |
+|------|--------|
+| **Nacos `table_filters`** | Adding collections/tables on an existing source triggers a **snapshot only for new names**, then CDC resumes from the previous position |
+| **MongoDB snapshots** | Resume token is captured **before** initial or added-table sync so writes during the snapshot are not lost |
+| **Multi-source** | In-process connector gRPC is **routed per data source** (by job), not always the first entry in `data_sources` |
+| **Checkpoints** | Jobs **reload persisted checkpoints on restart** from the correct file (`checkpoints.json`, `postgresql_checkpoints.json`, `mongodb_checkpoints.json`) |
+
+**v1.5.1:** PostgreSQL tables with `REPLICA IDENTITY FULL` no longer use every key column as the Elasticsearch document `_id` (fixes duplicate/orphan documents on update and delete).
+
+## v1.5.0 — Nacos Config Center & Configuration Hot Reload
 
 **Three major database sources + enterprise data transformation + centralized configuration:**
 
@@ -69,7 +82,7 @@ The system is composed of several key components:
 - **ES Sink Writer**: Writes data to Elasticsearch in efficient batches with automatic index management.
 - **Orchestrator**: Manages the lifecycle of synchronization tasks, supporting both legacy single-source and multi-source configurations.
 - **Dead Letter Queue**: Handles failed events with exponential backoff retry and persistent storage.
-- **Checkpoint Manager**: Persistent position tracking (binlog positions, PostgreSQL LSN, MongoDB resume tokens) for fault-tolerant resumption.
+- **Checkpoint Manager**: Persistent position tracking per engine (`checkpoints.json`, `postgresql_checkpoints.json`, `mongodb_checkpoints.json`); loaded on process restart and on hot-reloaded job restarts when the source identity is unchanged.
 - **Config Manager**: Loads configuration from a local file or Nacos, validates every change, and applies only the difference to running jobs.
 - **Control Plane**: The UI and configuration management backend (in development).
 
@@ -419,6 +432,7 @@ Valid changes are compared with the running configuration by ID, and only what c
 | Change | Effect |
 |--------|--------|
 | Data source or sink added / removed / changed | Rebuilt, and the jobs that use it are restarted |
+| `table_filters` grows on the same database (v1.5.2+) | Jobs restart; **only newly added** table/collection names get a serial snapshot, then CDC resumes from the saved checkpoint |
 | Job added / removed / changed / enabled / disabled | Only that job is rebuilt |
 | Only `name` / `description` changed | Metadata updated, no restart |
 | `global.log_level`, `global.dlq_config` | Applied immediately |
@@ -426,6 +440,18 @@ Valid changes are compared with the running configuration by ID, and only what c
 | `global.grpc_port`, `global.metrics_port` | Warning logged; requires a process restart |
 
 When a job is restarted, buffered events are flushed to the sink and the checkpoint is committed before the new job starts. MySQL and MongoDB jobs resume from the last position when the source host and database are unchanged; PostgreSQL jobs keep using their replication slot. Jobs with `force_initial_sync: true` run a full resync whenever a configuration change restarts them.
+
+**Multi-source deployments (v1.5.2+):** snapshot and checkpoint RPCs are routed to the connector for the job’s `source_id`, not the first data source in the list.
+
+#### Checkpoint files
+
+| Source | File | Contents |
+|--------|------|----------|
+| MySQL | `checkpoints.json` | Binlog file/position per job |
+| PostgreSQL | `postgresql_checkpoints.json` | LSN per job |
+| MongoDB | `mongodb_checkpoints.json` | Change stream resume token per job |
+
+On a **cold start** (process restart), enabled jobs load a valid checkpoint from the matching file before CDC. After upgrading from older builds, MongoDB jobs may log `Loaded persisted checkpoint for job` and `Resuming MongoDB CDC from resume token` — expected behavior.
 
 #### Options
 
@@ -486,6 +512,7 @@ ElasticRelay provides comprehensive PostgreSQL CDC capabilities with advanced fe
 - **Replication Slots**: Automatic creation and management of logical replication slots
 - **Publications**: Dynamic publication management for table filtering
 - **LSN Management**: Precise Log Sequence Number tracking for checkpoint/resume functionality
+- **Document IDs (v1.5.1+)**: With `REPLICA IDENTITY FULL`, Elasticsearch `_id` stays the real primary key from `pg_index`, not a concatenation of all key-flagged columns (avoids duplicate documents on update)
 
 #### Advanced PostgreSQL Capabilities
 - **Connection Pooling**: Intelligent connection pool management with configurable limits
@@ -571,8 +598,13 @@ ElasticRelay provides complete MongoDB CDC capabilities using Change Streams:
 #### Core MongoDB Features
 - **Change Streams**: Real-time CDC using MongoDB's native Change Streams API
 - **Cluster Support**: Automatic detection and support for replica sets and sharded clusters
-- **Resume Tokens**: Persistent resume token management for checkpoint/resume functionality
+- **Resume Tokens**: Persistent resume token management (`mongodb_checkpoints.json`) for checkpoint/resume across restarts and hot reloads
+- **Snapshot-safe CDC (v1.5.2+)**: A change stream position is recorded before full or added-collection snapshots; CDC replays overlapping writes idempotently by `_id`
 - **Operation Mapping**: Full support for INSERT, UPDATE, REPLACE, and DELETE operations
+
+#### Nacos / `table_filters` (v1.5.2+)
+
+When you add collection names to an existing MongoDB data source in Nacos, ElasticRelay snapshots **only the new collections**, creates Elasticsearch indices from that data, then continues CDC. Look for log lines such as `Snapshotting N table(s) added by configuration reload`. Collections that were added under v1.5.1 or earlier without a resync may still need a one-time `force_initial_sync: true` or a republish of `table_filters` after upgrade.
 
 #### Advanced MongoDB Capabilities
 - **Sharded Cluster Support**: 
@@ -718,11 +750,11 @@ Advanced parallel snapshot processing capabilities:
 
 ## Current Status
 
-**Current Version**: v1.5.0 | **Phase**: Phase 2 Complete ✅, Phase 3 In Progress (Transform Engine and Config Center complete)
+**Current Version**: v1.5.2 | **Phase**: Phase 2 Complete ✅, Phase 3 In Progress (Transform Engine and Config Center complete)
 
-This project has completed its core multi-source CDC platform (Phase 2) and has delivered the Transform Engine and the Nacos config center with hot reload as Phase 3 milestones. PostgreSQL CDC has been production-hardened with extensive stability fixes.
+This project has completed its core multi-source CDC platform (Phase 2) and has delivered the Transform Engine and the Nacos config center with hot reload as Phase 3 milestones. PostgreSQL CDC has been production-hardened with extensive stability fixes; v1.5.1–v1.5.2 focus on correct ES document IDs, Nacos `table_filters` expansion, MongoDB snapshot safety, per-source connector routing, and durable checkpoints.
 
-### ✅ Completed Features (v1.5.0)
+### ✅ Completed Features (through v1.5.2)
 - **Multi-Source CDC Pipeline**: 
   - **MySQL CDC**: Full implementation with binlog-based real-time synchronization, consistent datetime handling
   - **PostgreSQL CDC**: Production-hardened logical replication with WAL parsing, replication slots, publications, stable snapshot-to-CDC handoff, async batch decoupling, and job-scoped replication slot management
@@ -740,11 +772,12 @@ This project has completed its core multi-source CDC platform (Phase 2) and has 
 - **Advanced Configuration Management**: 
   - Multi-source configuration system with legacy migration support
   - Configuration source switch: local file (default) or Nacos config center (v1.5.0+)
-  - Automatic hot reload with validation, diff-based apply, and graceful job restart with checkpoint resume (v1.5.0+)
+  - Automatic hot reload with validation, diff-based apply, graceful job restart, added-`table_filters` snapshot, and checkpoint resume (v1.5.0+; added-table snapshot v1.5.2+)
   - Automatic format detection and migration tools
 - **Graceful Shutdown**: Buffered events are flushed and checkpoints committed on SIGINT / SIGTERM (v1.5.0+)
 - **Elasticsearch Integration**: High-performance bulk writing with automatic index management and data cleaning
-- **Checkpoint/Resume**: Persistent position tracking for fault tolerance with automatic recovery (binlog, LSN, resume tokens)
+- **Checkpoint/Resume**: Per-engine checkpoint files, load on restart, MongoDB pre-snapshot resume token (v1.5.2+)
+- **Multi-source in-process routing (v1.5.2+)**: One connector server per data source; snapshot/checkpoint RPCs keyed by job → source
 - **Dead Letter Queue (DLQ)**: 
   - Comprehensive DLQ system with exponential backoff retry (configurable max retries)
   - Persistent storage with deduplication and status tracking

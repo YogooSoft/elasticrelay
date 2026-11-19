@@ -3,7 +3,7 @@
 ![ElasticRelay Screenshot](/releases/download/asset/screenshot_02.png)
 
 <p align="center">
-  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.4.4-blue.svg" alt="Version"></a>
+  <a href="https://github.com/yogoosoft/ElasticRelay/releases"><img src="https://img.shields.io/badge/version-v1.5.2-blue.svg" alt="Version"></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/go-1.25.2+-00ADD8.svg" alt="Version Go"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Licence"></a>
 </p>
@@ -20,22 +20,37 @@
 
 ElasticRelay est un synchroniseur de données hétérogènes transparent, conçu pour fournir une Capture de Changement de Données (CDC) en temps réel depuis les principales bases de données OLTP (MySQL, PostgreSQL, MongoDB) vers Elasticsearch. Il vise à être plus convivial et plus fiable que les solutions existantes comme Logstash ou Flink.
 
-## 🎉 Points forts de la v1.4.4 - Plateforme CDC prête pour la production avec moteur de transformation
+## 🎉 Points forts v1.5.2 — Hot reload, points de contrôle & multi-sources
 
-**Trois sources majeures + transformation de données de niveau entreprise :**
+**Version récente (détails : [CHANGELOG.md](../../../CHANGELOG.md)) :**
+
+| Domaine | v1.5.2 |
+|---------|--------|
+| **Nacos `table_filters`** | Nouvelles tables/collections → **snapshot uniquement des ajouts**, puis CDC depuis le checkpoint |
+| **Snapshots MongoDB** | **Resume token** capturé avant snapshot complet ou partiel — pas de perte pendant le snapshot |
+| **Multi-sources** | Connecteur in-process **par source**, routage par job (plus seulement la première source) |
+| **Checkpoints** | Au redémarrage : fichiers `checkpoints.json`, `postgresql_checkpoints.json`, `mongodb_checkpoints.json` |
+
+**v1.5.1 :** PostgreSQL `REPLICA IDENTITY FULL` — `_id` ES = vraie clé primaire (fini les doublons à la mise à jour).
+
+## v1.5.0 — Nacos & rechargement à chaud
+
+**Trois sources majeures + transformation entreprise + configuration centralisée :**
 
 | Source | Statut | Fonctionnalités |
 |--------|--------|----------|
 | **MySQL** | ✅ Complet | CDC Binlog + Sync Initial + Snapshots Parallèles |
 | **PostgreSQL** | ✅ Durci pour la production | Réplication Logique + Parsing WAL + Transition Snapshot-CDC stable |
 | **MongoDB** | ✅ Complet | Change Streams + Clusters Shardés + Resume Tokens |
-| **Moteur de Transformation** | ✅ Complet | Mapping de Champs + Masquage de Données + Conversion de Types + Moteur d'Expressions |
+| **Moteur de Transformation** | ✅ Complet | Mapping de Champs + Masquage + Conversion de Types + Expressions |
+| **Config Center** | 🆕 Nouveau | Nacos ou fichier local + hot reload + apply par diff |
 
 ## Fonctionnalités Principales
 
 - **CDC Multi-Sources** : Support complet pour MySQL, PostgreSQL et MongoDB avec capture de changements en temps réel
 - **Moteur de Transformation** : Transformation de données de niveau entreprise avec mapping de champs, masquage de données (téléphone, carte d'identité, email, carte bancaire), conversion de types, évaluation d'expressions et filtrage conditionnel — traitement à 800 000+ ops/sec
 - **Configuration Sans Code** : Configuration basée sur JSON avec GUI de type assistant (en développement)
+- **Config Center & Hot Reload** : Fichier local (défaut) ou Nacos ; changements sans redémarrage du processus (v1.5.0+)
 - **Indexation Dynamique Multi-Tables** : Crée automatiquement des index Elasticsearch séparés pour chaque table source avec des modèles de nommage configurables (ex: `elasticrelay-users`, `elasticrelay-orders`)
 - **Gouvernance Intégrée** : Gère la structuration des données, l'anonymisation, la conversion de types, la normalisation et l'enrichissement
 - **Fiabilité par Défaut** : Utilise le CDC au niveau du journal de transactions, des points de contrôle précis pour la reprise, et des écritures idempotentes pour garantir l'intégrité des données
@@ -68,7 +83,8 @@ Le système est composé de plusieurs composants clés :
 - **ES Sink Writer** : Écrit les données vers Elasticsearch en lots efficaces avec gestion automatique des index.
 - **Orchestrateur** : Gère le cycle de vie des tâches de synchronisation, avec prise en charge des configurations legacy mono-source et multi-sources.
 - **Dead Letter Queue** : Gère les événements échoués avec nouvelle tentative à backoff exponentiel et stockage persistant.
-- **Gestionnaire de Points de Contrôle** : Suivi persistant des positions (positions binlog, LSN PostgreSQL, jetons de reprise MongoDB) pour une reprise tolérante aux pannes.
+- **Gestionnaire de Points de Contrôle** : Fichiers par moteur (`checkpoints.json`, `postgresql_checkpoints.json`, `mongodb_checkpoints.json`) ; chargement au redémarrage (v1.5.2+).
+- **Gestionnaire de Config** : Fichier local ou Nacos, validation et apply par diff (v1.5.0+).
 - **Plan de Contrôle** : Interface utilisateur et backend de gestion de configuration (en développement).
 
 ## Démarrage Rapide
@@ -317,6 +333,29 @@ Le système détecte automatiquement le format de configuration et supporte la m
 - `elasticrelay-orders` pour la table `orders`  
 - `elasticrelay-products` pour la table `products`
 
+### Sources de configuration & hot reload
+
+Configuration multi-sources (2.0 / 3.0) depuis **fichier local** (défaut) ou **Nacos** (`--config-source=nacos`, variables `NACOS_*`, script `nacos_publish.sh`). Options complètes : `elasticrelay.env.example` et [README.md](/README.md).
+
+#### Comportement du hot reload (v1.5.2+)
+
+| Modification | Effet |
+|--------------|-------|
+| Source / sink modifié | Redémarrage des jobs concernés |
+| `table_filters` étendu (même base) | Snapshot **des seuls ajouts**, puis CDC |
+| Job modifié | Ce job uniquement |
+| Règles transform | Immédiat |
+
+**Multi-sources (v1.5.2+) :** routage snapshot/checkpoint par `source_id` du job.
+
+#### Fichiers de checkpoint
+
+| Source | Fichier |
+|--------|---------|
+| MySQL | `checkpoints.json` |
+| PostgreSQL | `postgresql_checkpoints.json` |
+| MongoDB | `mongodb_checkpoints.json` |
+
 ### Support Dead Letter Queue (DLQ)
 
 ElasticRelay inclut un système DLQ complet pour gérer les événements échoués :
@@ -338,6 +377,7 @@ ElasticRelay fournit des capacités CDC PostgreSQL complètes avec des fonctionn
 - **Slots de Réplication** : Création et gestion automatiques des slots de réplication logique
 - **Publications** : Gestion dynamique des publications pour le filtrage de tables
 - **Gestion LSN** : Suivi précis du Log Sequence Number pour la fonctionnalité checkpoint/reprise
+- **IDs document (v1.5.1+)** : Avec `REPLICA IDENTITY FULL`, `_id` ES = vraie clé primaire (`pg_index`)
 
 #### Capacités PostgreSQL Avancées
 - **Pool de Connexions** : Gestion intelligente du pool de connexions avec limites configurables
@@ -379,8 +419,13 @@ ElasticRelay fournit des capacités CDC MongoDB complètes utilisant les Change 
 #### Fonctionnalités MongoDB de Base
 - **Change Streams** : CDC en temps réel utilisant l'API Change Streams native de MongoDB
 - **Support Cluster** : Détection et support automatiques des replica sets et clusters shardés
-- **Resume Tokens** : Gestion persistante des resume tokens pour la fonctionnalité checkpoint/reprise
+- **Resume Tokens** : `mongodb_checkpoints.json` ; reprise après redémarrage / hot reload (v1.5.2+)
+- **Snapshot & CDC (v1.5.2+)** : token capturé avant snapshot ; rejeu idempotent
 - **Mapping d'Opérations** : Support complet pour les opérations INSERT, UPDATE, REPLACE et DELETE
+
+#### Nacos / `table_filters` (v1.5.2+)
+
+Nouvelles collections dans Nacos → snapshot des seuls ajouts, puis CDC. Logs : `Snapshotting N table(s) added by configuration reload`.
 
 #### Capacités MongoDB Avancées
 - **Support Cluster Shardé** : 
@@ -526,11 +571,11 @@ Capacités avancées de traitement de snapshots parallèles :
 
 ## Statut Actuel
 
-**Version Actuelle** : v1.4.4 | **Phase** : Phase 2 Terminée ✅, Phase 3 En Cours (Moteur de Transformation terminé)
+**Version Actuelle** : v1.5.2 | **Phase** : Phase 2 Terminée ✅, Phase 3 En Cours (Transform & Config Center terminés)
 
-Ce projet a achevé sa plateforme CDC multi-sources principale (Phase 2) et a livré le Moteur de Transformation comme première étape majeure de la Phase 3. Le CDC PostgreSQL a été durci pour la production grâce à de nombreuses corrections de stabilité.
+v1.5.1–v1.5.2 : IDs document PostgreSQL, `table_filters` Nacos, sécurité snapshot MongoDB, routage multi-sources, checkpoints persistants.
 
-### ✅ Fonctionnalités Terminées (v1.4.4)
+### ✅ Fonctionnalités Terminées (jusqu'à v1.5.2)
 - **Pipeline CDC Multi-Sources** : 
   - **MySQL CDC** : Implémentation complète avec synchronisation en temps réel basée sur binlog et gestion cohérente des datetime
   - **PostgreSQL CDC** : Réplication logique durcie pour la production avec parsing WAL, slots de réplication, publications, transition snapshot-CDC stable, découplage asynchrone par lots, et gestion des slots de réplication par scope de job
@@ -547,10 +592,11 @@ Ce projet a achevé sa plateforme CDC multi-sources principale (Phase 2) et a li
 - **Architecture gRPC** : Définitions et implémentations de services complètes (Connector, Orchestrator, Sink, Transform, Health)
 - **Gestion de Configuration Avancée** : 
   - Système de configuration multi-sources avec support de migration legacy
-  - Synchronisation de configuration et capacités de hot-reload
+  - Nacos ou fichier local, hot reload, snapshot des `table_filters` ajoutés (v1.5.2+)
   - Détection automatique de format et outils de migration
 - **Intégration Elasticsearch** : Écriture en masse haute performance avec gestion automatique d'index et nettoyage de données
-- **Checkpoint/Reprise** : Suivi de position persistant pour la tolérance aux pannes avec récupération automatique (binlog, LSN, resume tokens)
+- **Checkpoint/Reprise** : Fichiers par moteur, chargement au redémarrage, token MongoDB pré-snapshot (v1.5.2+)
+- **Routage multi-sources in-process (v1.5.2+)** : un connecteur par source
 - **Dead Letter Queue (DLQ)** : 
   - Système DLQ complet avec retry à backoff exponentiel (max retries configurable)
   - Stockage persistant avec déduplication et suivi de statut

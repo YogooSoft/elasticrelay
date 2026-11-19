@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 
 	pb "github.com/yogoosoft/elasticrelay/api/gateway/v1"
@@ -73,10 +75,62 @@ func (s *swappableSink) SetupIlm(ctx context.Context, req *pb.SetupIlmRequest) (
 	return srv.SetupIlm(ctx, req)
 }
 
-// swappableConnector is a ConnectorService whose implementation can be replaced at runtime.
+// swappableConnector is a ConnectorService whose implementation can be replaced
+// at runtime. Requests of a known job are served by the connector of that job's
+// data source; other requests fall back to the default (first) data source.
 type swappableConnector struct {
 	pb.UnimplementedConnectorServiceServer
 	current atomic.Pointer[pb.ConnectorServiceServer]
+
+	mu        sync.RWMutex
+	bySource  map[string]pb.ConnectorServiceServer
+	jobSource func(jobID string) (string, bool)
+}
+
+// setJobSourceResolver sets how a job ID is mapped to its data source ID.
+func (s *swappableConnector) setJobSourceResolver(f func(jobID string) (string, bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.jobSource = f
+}
+
+// setSource sets or, when srv is nil, removes the connector of a data source.
+func (s *swappableConnector) setSource(sourceID string, srv pb.ConnectorServiceServer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if srv == nil {
+		delete(s.bySource, sourceID)
+		return
+	}
+	if s.bySource == nil {
+		s.bySource = map[string]pb.ConnectorServiceServer{}
+	}
+	s.bySource[sourceID] = srv
+}
+
+func (s *swappableConnector) hasSource(sourceID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.bySource[sourceID]
+	return ok
+}
+
+func (s *swappableConnector) forJob(jobID string) (pb.ConnectorServiceServer, error) {
+	s.mu.RLock()
+	resolve := s.jobSource
+	s.mu.RUnlock()
+	if resolve != nil && jobID != "" {
+		if sourceID, ok := resolve(jobID); ok {
+			s.mu.RLock()
+			srv, ok := s.bySource[sourceID]
+			s.mu.RUnlock()
+			if !ok {
+				return nil, status.Errorf(codes.Unavailable, "no connector for data source %q of job %q", sourceID, jobID)
+			}
+			return srv, nil
+		}
+	}
+	return s.get()
 }
 
 func (s *swappableConnector) set(srv pb.ConnectorServiceServer) {
@@ -96,7 +150,7 @@ func (s *swappableConnector) get() (pb.ConnectorServiceServer, error) {
 }
 
 func (s *swappableConnector) BeginSnapshot(req *pb.BeginSnapshotRequest, stream grpc.ServerStreamingServer[pb.SnapshotChunk]) error {
-	srv, err := s.get()
+	srv, err := s.forJob(req.GetJobId())
 	if err != nil {
 		return err
 	}
@@ -104,7 +158,7 @@ func (s *swappableConnector) BeginSnapshot(req *pb.BeginSnapshotRequest, stream 
 }
 
 func (s *swappableConnector) StartCdc(req *pb.StartCdcRequest, stream grpc.ServerStreamingServer[pb.ChangeEvent]) error {
-	srv, err := s.get()
+	srv, err := s.forJob(req.GetJobId())
 	if err != nil {
 		return err
 	}
@@ -112,7 +166,7 @@ func (s *swappableConnector) StartCdc(req *pb.StartCdcRequest, stream grpc.Serve
 }
 
 func (s *swappableConnector) CommitCheckpoint(ctx context.Context, req *pb.CommitCheckpointRequest) (*pb.CommitCheckpointResponse, error) {
-	srv, err := s.get()
+	srv, err := s.forJob(req.GetJobId())
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +174,7 @@ func (s *swappableConnector) CommitCheckpoint(ctx context.Context, req *pb.Commi
 }
 
 func (s *swappableConnector) LoadCheckpoint(ctx context.Context, req *pb.LoadCheckpointRequest) (*pb.LoadCheckpointResponse, error) {
-	srv, err := s.get()
+	srv, err := s.forJob(req.GetJobId())
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +274,38 @@ func (r *runtimeServices) rebuild(oldCfg, newCfg *config.MultiConfig) error {
 		}
 		r.connector.set(srv)
 	}
-	return nil
+	return r.syncSourceConnectors(oldCfg, newCfg)
+}
+
+// syncSourceConnectors keeps one connector server per data source, rebuilding
+// those whose configuration changed. A nil oldCfg builds all of them.
+func (r *runtimeServices) syncSourceConnectors(oldCfg, newCfg *config.MultiConfig) error {
+	oldSources := map[string]config.DataSourceConfig{}
+	if oldCfg != nil {
+		for _, ds := range oldCfg.DataSources {
+			oldSources[ds.ID] = ds
+		}
+	}
+	var errs []error
+	for _, ds := range newCfg.DataSources {
+		if old, ok := oldSources[ds.ID]; ok && sameJSON(old, ds) && r.connector.hasSource(ds.ID) {
+			delete(oldSources, ds.ID)
+			continue
+		}
+		delete(oldSources, ds.ID)
+		ds := ds
+		srv, err := buildConnectorServer(&ds)
+		if err != nil {
+			r.connector.setSource(ds.ID, nil)
+			errs = append(errs, fmt.Errorf("failed to build connector service for data source '%s': %w", ds.ID, err))
+			continue
+		}
+		r.connector.setSource(ds.ID, srv)
+	}
+	for id := range oldSources {
+		r.connector.setSource(id, nil)
+	}
+	return errors.Join(errs...)
 }
 
 // applyTransform replaces the transform rules; empty content means pass-through.
