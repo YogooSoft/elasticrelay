@@ -1,5 +1,39 @@
 # ElasticRelay Changelog
 
+## [v1.5.3] - 2026-11-19
+
+Hot reload: optional Elasticsearch index cleanup when `table_filters` shrinks. Complements v1.5.2 added-table snapshot behavior.
+
+### ✨ Enhancements
+
+#### 1. Remove Elasticsearch Indices When Tables Leave `table_filters` (`internal/orchestrator/apply.go`, `internal/orchestrator/multi_orchestrator.go`, `internal/sink/es/es.go`)
+
+- **Issue**: shrinking `table_filters` on an existing data source (local file or Nacos hot reload) stopped CDC for removed tables/collections but **left existing Elasticsearch indices and documents unchanged**, so ES could still contain stale data for tables no longer synced
+- **Fix**:
+  - On configuration reload, compute **`removedTables`** (symmetric to existing `addedTables`) and pass them to restarted jobs
+  - When a job starts after reload, optionally delete indices named `{index_prefix}-{table}` for each removed name via `es.DeleteIndex`
+  - **Opt-in** sink option: `sinks[].options.delete_indices_on_table_filter_remove` (default **false** when unset — indices are kept and a log line explains how to enable deletion)
+  - Skips deletion when the old `table_filters` was empty (“all tables”) or the new list is empty (widening scope to all tables)
+- MySQL, PostgreSQL and MongoDB use the same reload path; only **Elasticsearch** sinks perform index deletion
+
+#### 2. Sample Configuration (`config/*.json`)
+
+- Example multi-source configs under `config/` set `delete_indices_on_table_filter_remove: true` on the main Elasticsearch sink alongside `index_prefix`
+
+### ⚠️ Upgrade Notes
+
+- Production deployments that **must retain** ES data after removing a table from `table_filters` should omit this option or set it to `false`
+- Index names follow the same rule as writes: `{index_prefix}-{lowercase_table_or_collection_name}`
+- Deleting a sink option value alone does not remove indices; shrink `table_filters` and reload configuration with the option enabled
+
+### ✅ Verification
+
+- `TestRemovedTables`, `TestApplyConfigurationPassesRemovedTablesToRestartedJob`, `TestDeleteIndicesOnTableFilterRemove`, `TestCleanupRemovedTableIndices*` (orchestrator hot reload / index cleanup)
+- `TestDeleteIndexOK`, `TestDeleteIndexNotFound`, `TestDeleteIndexError` (`internal/sink/es`)
+- Log markers: `Removed table "…" from table_filters; deleted Elasticsearch index …`, or `Elasticsearch indices unchanged (set sinks[].options.delete_indices_on_table_filter_remove to true …)`
+
+---
+
 ## [v1.5.1] - 2026-11-19
 
 ### 🐛 Bug Fixes

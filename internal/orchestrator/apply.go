@@ -272,11 +272,12 @@ func (mo *MultiOrchestrator) ApplyConfiguration(ctx context.Context, newCfg *con
 		if cp, ok := stoppedCps[jobCfg.ID]; ok && sameSourceIdentity(oldSources, newSources, jobCfg.SourceID, cp) {
 			resume = cp
 		}
-		var added []string
+		var added, removed []string
 		if stopped[jobCfg.ID] {
 			added = addedTables(oldSources, newSources, jobCfg.SourceID)
+			removed = removedTables(oldSources, newSources, jobCfg.SourceID)
 		}
-		job, err := mo.createJob(jobCfg, resume, added)
+		job, err := mo.createJob(jobCfg, resume, added, removed)
 		if err != nil {
 			report.Failed["job:"+jobCfg.ID] = err.Error()
 			log.Printf("⚠️  MultiOrchestrator: Failed to start job '%s': %v", jobCfg.ID, err)
@@ -345,6 +346,28 @@ func addedTables(oldSources, newSources map[string]config.DataSourceConfig, sour
 		}
 	}
 	return added
+}
+
+// removedTables returns table filters present on the old data source but absent
+// on the new one (same database identity). Empty old filters mean “all tables”,
+// so nothing is reported removed. Empty new filters mean widening to all tables,
+// so indices are not deleted.
+func removedTables(oldSources, newSources map[string]config.DataSourceConfig, sourceID string) []string {
+	o, ok1 := oldSources[sourceID]
+	n, ok2 := newSources[sourceID]
+	if !ok1 || !ok2 || len(o.TableFilters) == 0 || len(n.TableFilters) == 0 {
+		return nil
+	}
+	if o.Type != n.Type || o.Host != n.Host || o.Port != n.Port || o.Database != n.Database {
+		return nil
+	}
+	var removed []string
+	for _, t := range o.TableFilters {
+		if !contains(n.TableFilters, t) && !contains(removed, t) {
+			removed = append(removed, t)
+		}
+	}
+	return removed
 }
 
 func contains(list []string, s string) bool {

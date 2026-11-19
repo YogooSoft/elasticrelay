@@ -250,6 +250,59 @@ func TestAddedTables(t *testing.T) {
 	}
 }
 
+func TestRemovedTables(t *testing.T) {
+	base := config.DataSourceConfig{ID: "s", Type: "mysql", Host: "h", Port: 1, Database: "d", TableFilters: []string{"a", "b"}}
+	with := func(f func(*config.DataSourceConfig)) config.DataSourceConfig {
+		ds := base
+		ds.TableFilters = append([]string{}, base.TableFilters...)
+		f(&ds)
+		return ds
+	}
+	tests := []struct {
+		name string
+		old  config.DataSourceConfig
+		new  config.DataSourceConfig
+		want []string
+	}{
+		{"removed one", base, with(func(d *config.DataSourceConfig) { d.TableFilters = []string{"a"} }), []string{"b"}},
+		{"removed all explicit", base, with(func(d *config.DataSourceConfig) { d.TableFilters = []string{} }), nil},
+		{"added only", base, with(func(d *config.DataSourceConfig) { d.TableFilters = []string{"a", "b", "c"} }), nil},
+		{"old covers all", with(func(d *config.DataSourceConfig) { d.TableFilters = nil }), base, nil},
+		{"other database", base, with(func(d *config.DataSourceConfig) { d.Database = "x"; d.TableFilters = []string{"a"} }), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := removedTables(map[string]config.DataSourceConfig{"s": tt.old}, map[string]config.DataSourceConfig{"s": tt.new}, "s")
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyConfigurationPassesRemovedTablesToRestartedJob(t *testing.T) {
+	cfg := applyTestConfig()
+	cfg.DataSources[0].TableFilters = []string{"users", "orders"}
+	mo := newTestOrchestrator(t, cfg)
+
+	newCfg := applyTestConfig()
+	newCfg.DataSources[0].TableFilters = []string{"users"}
+	if _, err := mo.ApplyConfiguration(context.Background(), newCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mo.jobsMux.RLock()
+	defer mo.jobsMux.RUnlock()
+	for _, id := range []string{"job-a", "job-keep"} {
+		if got := mo.jobs[id].removedTables; !reflect.DeepEqual(got, []string{"orders"}) {
+			t.Fatalf("%s removed tables = %v", id, got)
+		}
+	}
+	if got := mo.jobs["job-b"].removedTables; got != nil {
+		t.Fatalf("job on unchanged source must not get removed tables: %v", got)
+	}
+}
+
 type recordingSink struct {
 	mu     sync.Mutex
 	events []*pb.ChangeEvent

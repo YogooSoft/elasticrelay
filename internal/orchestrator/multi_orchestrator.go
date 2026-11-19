@@ -21,6 +21,7 @@ import (
 	"github.com/yogoosoft/elasticrelay/internal/connectors/postgresql"
 	"github.com/yogoosoft/elasticrelay/internal/dlq"
 	"github.com/yogoosoft/elasticrelay/internal/parallel"
+	"github.com/yogoosoft/elasticrelay/internal/sink/es"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -92,6 +93,9 @@ type MultiJob struct {
 	// addedTables are tables added to the source by a configuration reload; they
 	// are snapshotted before CDC resumes when the full initial sync is skipped.
 	addedTables []string
+	// removedTables are tables dropped from table_filters on reload; indices may
+	// be deleted when the sink option delete_indices_on_table_filter_remove is set.
+	removedTables []string
 	// preserveCheckpoint keeps snapshot chunks from moving the job checkpoint,
 	// because a partial snapshot must not skip CDC events of the other tables.
 	preserveCheckpoint bool
@@ -319,7 +323,7 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 		return nil, fmt.Errorf("failed to parse job config: %w", err)
 	}
 
-	job, err := mo.createJob(jobConfig, nil, nil)
+	job, err := mo.createJob(jobConfig, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -334,8 +338,9 @@ func (mo *MultiOrchestrator) CreateJob(ctx context.Context, req *pb.CreateJobReq
 
 // createJob creates, registers and (if enabled) starts a job. resumeCp, when
 // set, is the in-memory checkpoint of a previous incarnation of the same job;
-// addedTables are source tables that incarnation did not sync yet.
-func (mo *MultiOrchestrator) createJob(jobConfig config.SyncJobConfig, resumeCp *pb.Checkpoint, addedTables []string) (*MultiJob, error) {
+// addedTables are source tables that incarnation did not sync yet; removedTables
+// are tables no longer in table_filters after a configuration reload.
+func (mo *MultiOrchestrator) createJob(jobConfig config.SyncJobConfig, resumeCp *pb.Checkpoint, addedTables, removedTables []string) (*MultiJob, error) {
 	jobID := jobConfig.ID
 	if jobID == "" {
 		jobID = fmt.Sprintf("job-%d", time.Now().UnixNano())
@@ -405,6 +410,7 @@ func (mo *MultiOrchestrator) createJob(jobConfig config.SyncJobConfig, resumeCp 
 		drainCh:           make(chan struct{}),
 		resumeCp:          resumeCp,
 		addedTables:       addedTables,
+		removedTables:     removedTables,
 		grpcAddr:          mo.grpcAddress,
 		connectorInstance: connectorInstance,
 		sinkClient:        sinkClient,
@@ -488,6 +494,8 @@ func (j *MultiJob) run() {
 
 	// Process CDC events asynchronously so WAL reads are not blocked by sink latency.
 	go j.cdcBatchProcessor()
+
+	j.cleanupRemovedTableIndices()
 
 	// Check if initial sync is enabled and needed
 	if j.needsInitialSync() {
@@ -1393,6 +1401,54 @@ func (j *MultiJob) syncAddedTables() {
 		return
 	}
 	log.Printf("MultiJob '%s': Snapshot of added tables completed", j.ID)
+}
+
+func (j *MultiJob) deleteIndicesOnTableFilterRemove() bool {
+	if j.sinkConfig == nil {
+		return false
+	}
+	v, ok := j.sinkConfig["delete_indices_on_table_filter_remove"]
+	if !ok {
+		return false
+	}
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		return strings.EqualFold(x, "true") || x == "1"
+	default:
+		return false
+	}
+}
+
+// deleteIndexForCleanup is used by cleanupRemovedTableIndices; tests may replace it.
+var deleteIndexForCleanup = es.DeleteIndex
+
+// cleanupRemovedTableIndices deletes Elasticsearch indices for tables dropped
+// from table_filters when the sink option delete_indices_on_table_filter_remove
+// is enabled.
+func (j *MultiJob) cleanupRemovedTableIndices() {
+	if len(j.removedTables) == 0 {
+		return
+	}
+	if !j.deleteIndicesOnTableFilterRemove() {
+		log.Printf("MultiJob '%s': %d table(s) removed from table_filters %v; Elasticsearch indices unchanged (set sinks[].options.delete_indices_on_table_filter_remove to true to delete them)", j.ID, len(j.removedTables), j.removedTables)
+		return
+	}
+	if j.fullSinkConfig == nil || !strings.EqualFold(j.fullSinkConfig.Type, "elasticsearch") {
+		log.Printf("MultiJob '%s': Skipping index cleanup for removed tables (sink is not elasticsearch)", j.ID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	for _, table := range j.removedTables {
+		indexName := j.generateIndexName(table)
+		if err := deleteIndexForCleanup(ctx, j.fullSinkConfig, indexName); err != nil {
+			log.Printf("❌ MultiJob '%s': Failed to delete index %s for removed table %q: %v", j.ID, indexName, table, err)
+			continue
+		}
+		log.Printf("MultiJob '%s': Removed table %q from table_filters; deleted Elasticsearch index %s", j.ID, table, indexName)
+	}
 }
 
 // monitorParallelProgress monitors the progress of parallel sync

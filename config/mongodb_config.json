@@ -31,6 +31,7 @@
       "password": "zIUPPogxwxCR",
       "options": {
         "index_prefix": "elasticrelay_mongo",
+        "delete_indices_on_table_filter_remove": true,
         "bulk_size": 1000,
         "flush_interval": "5s"
       }

@@ -1,5 +1,39 @@
 # ElasticRelay 修改日志
 
+## [v1.5.3] - 2026-11-19
+
+配置热更新：从 `table_filters` 缩小同步范围时，可选择在 Elasticsearch 中删除对应索引。与 v1.5.2「新增表增量快照」行为对称。
+
+### ✨ 功能增强
+
+#### 1. 缩表时删除 Elasticsearch 索引 (`internal/orchestrator/apply.go`, `internal/orchestrator/multi_orchestrator.go`, `internal/sink/es/es.go`)
+
+- **问题**：在已有数据源上从 `table_filters` 中删掉表或集合（本地文件或 Nacos 热更新）后，CDC 会停止同步这些对象，但 **Elasticsearch 中已存在的索引和文档不会清理**，检索侧仍可能看到已停同步的历史数据
+- **修复**：
+  - 配置重载时计算 **`removedTables`**（与现有 `addedTables` 对称），并传入重启后的作业
+  - 作业在重载后启动时，可按配置删除每个被移除名称对应的索引 `{index_prefix}-{表名}`
+  - **需显式开启**：在 `sinks[].options` 中设置 `delete_indices_on_table_filter_remove`（未配置时默认为 **false**，保留索引并打印说明日志）
+  - 旧配置 `table_filters` 为空（表示全表）或新配置为空（扩大为全表）时不删除索引
+- MySQL、PostgreSQL、MongoDB 共用同一热更新路径；仅 **Elasticsearch** 类型 Sink 会执行删索引
+
+#### 2. 示例配置 (`config/*.json`)
+
+- `config/` 下多源示例已在主 Elasticsearch Sink 的 `options` 中增加 `delete_indices_on_table_filter_remove: true`（与 `index_prefix` 同级）
+
+### ⚠️ 升级说明
+
+- 若业务要求在从 `table_filters` 去掉表后 **仍保留** ES 中的数据，请勿配置该项或设为 `false`
+- 索引命名规则与写入一致：`{index_prefix}-{表名或集合名小写}`
+- 仅修改 Sink 选项不会主动删索引；需在缩小 `table_filters` 并触发热更新且选项为 `true` 时才会删除
+
+### ✅ 验证
+
+- `TestRemovedTables`、`TestApplyConfigurationPassesRemovedTablesToRestartedJob`、`TestDeleteIndicesOnTableFilterRemove`、`TestCleanupRemovedTableIndices*`（编排器热更新 / 删索引）
+- `TestDeleteIndexOK`、`TestDeleteIndexNotFound`、`TestDeleteIndexError`（`internal/sink/es`）
+- 日志关键字：`Removed table "…" from table_filters; deleted Elasticsearch index …`，或 `Elasticsearch indices unchanged (set sinks[].options.delete_indices_on_table_filter_remove to true …)`
+
+---
+
 ## [v1.5.1] - 2026-11-19
 
 ### 🐛 问题修复

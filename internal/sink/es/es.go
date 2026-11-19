@@ -243,7 +243,7 @@ func (s *Server) BulkWrite(stream pb.SinkService_BulkWriteServer) error {
 					} else {
 						errMsg = fmt.Sprintf("ELASTICSEARCH BULK ERROR for PK %s, Op %s, Index %s: %s: %s", item.DocumentID, item.Action, item.Index, res.Error.Type, res.Error.Reason)
 					}
-					log.Printf(errMsg)
+					log.Print(errMsg)
 					bulkFailures = append(bulkFailures, errMsg)
 				},
 			},
@@ -449,6 +449,41 @@ func (s *Server) createDefaultIndex(indexName string) error {
 	}
 
 	log.Printf("Successfully created index: %s", indexName)
+	return nil
+}
+
+// DeleteIndex removes an Elasticsearch index for the given sink configuration.
+// A missing index (HTTP 404) is treated as success.
+func DeleteIndex(ctx context.Context, sinkCfg *config.SinkConfig, indexName string) error {
+	if sinkCfg == nil || !strings.EqualFold(sinkCfg.Type, "elasticsearch") {
+		return fmt.Errorf("elasticsearch sink required")
+	}
+	srv, err := NewServerFromSinkConfig(sinkCfg)
+	if err != nil {
+		return err
+	}
+	return srv.deleteIndex(ctx, indexName)
+}
+
+func (s *Server) deleteIndex(ctx context.Context, indexName string) error {
+	res, err := s.esClient.Indices.Delete(
+		[]string{indexName},
+		s.esClient.Indices.Delete.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("delete index request failed: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode == 404 {
+		log.Printf("Index %s does not exist, nothing to delete", indexName)
+		return nil
+	}
+	if res.IsError() {
+		body, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("delete index %s: %s", indexName, string(body))
+	}
+	log.Printf("Deleted index: %s", indexName)
 	return nil
 }
 

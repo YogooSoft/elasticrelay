@@ -28,6 +28,7 @@
       "password": "elasticrelay_pass",
       "options": {
         "index_prefix": "elasticrelay",
+        "delete_indices_on_table_filter_remove": true,
         "batch_size": 100,
         "flush_bytes": 1048576,
         "flush_interval": "3s",
