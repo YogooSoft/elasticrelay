@@ -649,6 +649,18 @@ func (wp *WALParser) parseRelation(data []byte) (int, error) {
 		}
 	}
 
+	// With REPLICA IDENTITY FULL, pgoutput flags every column as part of the key,
+	// so the flags cannot identify the primary key. Prefer the primary key loaded
+	// from pg_index whenever it is still valid for the new column list.
+	if existing := wp.relations[relationID]; existing != nil && len(existing.PrimaryKeyCols) > 0 &&
+		allColumnsPresent(existing.PrimaryKeyCols, columns) {
+		primaryKeyCols = existing.PrimaryKeyCols
+	} else if replicaIdentity == 'f' {
+		logger.Warn("Relation %s.%s uses REPLICA IDENTITY FULL and has no preloaded primary key; falling back to first column as document ID",
+			namespace, relationName)
+		primaryKeyCols = nil
+	}
+
 	wp.relations[relationID] = &RelationInfo{
 		RelationID:      relationID,
 		Namespace:       namespace,
@@ -662,6 +674,22 @@ func (wp *WALParser) parseRelation(data []byte) (int, error) {
 		relationID, namespace, relationName, len(columns))
 
 	return offset, nil
+}
+
+func allColumnsPresent(names []string, columns []ColumnInfo) bool {
+	for _, name := range names {
+		found := false
+		for _, col := range columns {
+			if col.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // parseInsert parses INSERT message

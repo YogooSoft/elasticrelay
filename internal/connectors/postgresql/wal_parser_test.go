@@ -207,6 +207,67 @@ func TestCreateChangeEvent_UsesConfiguredPrimaryKeyColumn(t *testing.T) {
 	}
 }
 
+func TestParseRelation_ReplicaIdentityFullKeepsRealPrimaryKey(t *testing.T) {
+	parser := NewWALParser(nil, "slot", "pub", "0/0", []string{"test_data"})
+	parser.AddRelation(&RelationInfo{
+		RelationID:     42,
+		Namespace:      "public",
+		RelationName:   "test_data",
+		PrimaryKeyCols: []string{"id"},
+		Columns:        []ColumnInfo{{Name: "id", TypeID: 25}, {Name: "name", TypeID: 25}},
+	})
+
+	stream := &mockStartCdcStream{}
+	handler := &EventHandler{stream: stream, currentLSN: "0/ABCDEF"}
+
+	var walData []byte
+	walData = append(walData, buildRelationMessage(42, "public", "test_data", 'f', "id", "name")...)
+	walData = append(walData, buildInsertMessage(42, "1", "user_1")...)
+	walData = append(walData, buildInsertMessage(42, "1", "user_1_updated")...)
+
+	if err := parser.parseLogicalMessage(walData, handler); err != nil {
+		t.Fatalf("parseLogicalMessage returned error: %v", err)
+	}
+	if len(stream.events) != 2 {
+		t.Fatalf("expected 2 change events, got %d", len(stream.events))
+	}
+	for i, event := range stream.events {
+		if event.PrimaryKey != "1" {
+			t.Fatalf("event %d: expected primary key 1, got %s", i, event.PrimaryKey)
+		}
+	}
+}
+
+func buildRelationMessage(relationID uint32, namespace, name string, replicaIdentity byte, columns ...string) []byte {
+	msg := []byte{'R'}
+
+	relationBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(relationBuf, relationID)
+	msg = append(msg, relationBuf...)
+	msg = append(msg, []byte(namespace)...)
+	msg = append(msg, 0)
+	msg = append(msg, []byte(name)...)
+	msg = append(msg, 0)
+	msg = append(msg, replicaIdentity)
+
+	columnCountBuf := make([]byte, 2)
+	binary.BigEndian.PutUint16(columnCountBuf, uint16(len(columns)))
+	msg = append(msg, columnCountBuf...)
+
+	for _, column := range columns {
+		// pgoutput flags every column as a key column under REPLICA IDENTITY FULL.
+		msg = append(msg, 1)
+		msg = append(msg, []byte(column)...)
+		msg = append(msg, 0)
+		typeBuf := make([]byte, 8)
+		binary.BigEndian.PutUint32(typeBuf[0:4], 25)
+		binary.BigEndian.PutUint32(typeBuf[4:8], 0xFFFFFFFF)
+		msg = append(msg, typeBuf...)
+	}
+
+	return msg
+}
+
 func buildInsertMessage(relationID uint32, values ...string) []byte {
 	msg := []byte{'I'}
 

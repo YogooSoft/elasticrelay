@@ -1,5 +1,30 @@
 # ElasticRelay Changelog
 
+## [v1.5.1] - 2026-11-19
+
+### 🐛 Bug Fixes
+
+#### 1. PostgreSQL Updates Created New Documents in Elasticsearch (`internal/connectors/postgresql/wal_parser.go`)
+
+- **Issue**: when a source table uses `REPLICA IDENTITY FULL`, pgoutput flags every column as a key column in RELATION messages. The parser treated all of them as the primary key and built the ES document `_id` from every column value (e.g. `1:alice:...`), overwriting the real primary key preloaded from `pg_index` at startup. As a result:
+  - Updating a row changed its `_id`, so ES gained a new document and kept the old one (3 rows in the table, 4 documents in ES)
+  - Every further update of the same row added another document
+  - Deletes computed an `_id` that did not match the one written by the initial sync, so documents were not removed from ES
+- **Fix**:
+  - When parsing a RELATION message, keep the primary key preloaded from `pg_index` as long as its columns still exist in the new schema
+  - For `REPLICA IDENTITY FULL` tables without a preloaded primary key (e.g. tables added to the publication after startup), key flags are no longer treated as the primary key; the first column is used as the document ID and a warning is logged
+- MySQL and MongoDB are not affected
+
+### ⚠️ Upgrade Notes
+
+- For PostgreSQL sources, documents previously written with the wrong `_id` (like `1:xxx:...`) are not cleaned up automatically; delete them manually, or rebuild the index and run a full resync
+
+### ✅ Verification
+
+- New regression test `TestParseRelation_ReplicaIdentityFullKeepsRealPrimaryKey`: the computed primary key was `1:user_1` before the fix and is `1` after it
+
+---
+
 ## [v1.5.0] - 2026-11-11
 
 ### ✨ New Feature: Nacos Config Center and Configuration Hot Reload

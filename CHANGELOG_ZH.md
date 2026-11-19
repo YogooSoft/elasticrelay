@@ -1,5 +1,30 @@
 # ElasticRelay 修改日志
 
+## [v1.5.1] - 2026-11-19
+
+### 🐛 问题修复
+
+#### 1. PostgreSQL 修改记录后 ES 中变成新增文档 (`internal/connectors/postgresql/wal_parser.go`)
+
+- **问题：** 源表为 `REPLICA IDENTITY FULL` 时，pgoutput 在 RELATION 消息中把每一列都标记为 key 列，解析器据此把所有列都当成主键，用全部列值拼接作为 ES 文档 `_id`（例如 `1:张三:...`）。它还覆盖了启动时从 `pg_index` 预加载的真实主键。结果：
+  - 修改一行后 `_id` 随之变化，ES 中新增一条文档，原文档保留（表中 3 条，ES 中变成 4 条）
+  - 同一行每修改一次，ES 中就多一条
+  - 删除时算出的 `_id` 与全量同步写入的 `_id` 不一致，ES 中的文档删不掉
+- **修复：**
+  - 解析 RELATION 消息时，优先沿用从 `pg_index` 预加载的主键（主键列仍存在于新表结构中时）
+  - `REPLICA IDENTITY FULL` 且没有预加载主键时（例如启动后才加入 publication 的表），不再把 key 标志当主键，改用第一列作为文档 ID，并打印警告
+- MySQL 和 MongoDB 不受影响
+
+### ⚠️ 升级说明
+
+- PostgreSQL 源升级后，之前因主键问题写入的错误文档（`_id` 形如 `1:xxx:...`）不会自动清理，需要手动删除，或重建索引后重新全量同步
+
+### ✅ 验证
+
+- 新增回归测试 `TestParseRelation_ReplicaIdentityFullKeepsRealPrimaryKey`：修复前算出的主键为 `1:user_1`，修复后为 `1`
+
+---
+
 ## [v1.5.0] - 2026-11-11
 
 ### ✨ 新功能：Nacos 配置中心与配置热更新
